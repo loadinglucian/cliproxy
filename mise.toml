@@ -1,0 +1,3 @@
+# Pins the Go toolchain to the go directive in go.mod. Bump both together.
+[tools]
+go = "1.26.10"

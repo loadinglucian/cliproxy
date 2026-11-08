@@ -1,0 +1,90 @@
+# Merges each new upstream release into main through an auto-merging PR. The logic
+# is in scripts/fork/sync.sh (runnable locally with --dry-run). A conflict or failed
+# build opens an issue for the maintainer and ends the run red, which triggers
+# GitHub's failed-workflow email.
+#
+# Writes (push, PR, auto-merge, issues) use SYNC_TOKEN, a fine-grained PAT owned by
+# the maintainer: GITHUB_TOKEN cannot push commits that touch .github/workflows/
+# (upstream merges do), and PRs it opens would not trigger fork-ci. GITHUB_TOKEN is
+# only used for reads and for disabling upstream workflows.
+name: fork-sync
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Upstream tag to merge instead of the latest release (optional)
+        required: false
+        type: string
+        default: ''
+      dry_run:
+        description: Merge and test without pushing, opening a PR, or filing an issue
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: write
+  checks: read
+  statuses: read
+  pull-requests: read
+  issues: read
+
+concurrency:
+  group: fork-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: sync
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Require SYNC_TOKEN
+        env:
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+        run: |
+          if [[ -z "$SYNC_TOKEN" ]]; then
+            echo "::error::Repository secret SYNC_TOKEN is missing; see FORK.md"
+            echo "## Sync blocked: repository secret SYNC_TOKEN is missing (see FORK.md)" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_TOKEN }}
+
+      # Runs before the merge and on dry runs too, so workflows added by an earlier
+      # upstream merge are switched off even when this run finds nothing new.
+      - name: Disable non-fork workflows
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/fork/disable-foreign-workflows.sh
+
+      - uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e # v5.2.3
+        with:
+          version: 2026.10.18
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-sync-${{ runner.os }}-${{ hashFiles('mise.lock', 'go.sum') }}
+          restore-keys: go-sync-${{ runner.os }}-
+
+      - name: Merge upstream release
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          SYNC_READ_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [[ -n "${TAG:-}" ]]; then args+=(--tag "$TAG"); fi
+          if [[ "${DRY_RUN:-false}" == "true" ]]; then args+=(--dry-run); fi
+          scripts/fork/sync.sh "${args[@]}"
