@@ -19,7 +19,7 @@ Prerequisites on ThinkPad (one time, needs sudo):
 
 ```sh
 sudo systemctl enable --now docker
-sudo usermod -aG docker "$USER"     # then log out and back in
+sudo usermod -aG docker "$USER"     # then reboot, so the backup timer gets the group too
 sudo pacman -S --needed restic
 ```
 
@@ -35,7 +35,7 @@ It is safe to rerun after pulling changes. It:
 2. Generates four passwords once (0600 files, never printed): `admin-password`, `writer-password`, `reader-password`, `restic-password`.
 3. Renders `~/.config/cliproxy-log/users.d/cliproxy-users.xml` with SHA-256 hashes of those passwords.
 4. Starts the container, applies every `schema/*.sql`, and checks each user's permissions over HTTP.
-5. Installs `~/.local/bin/cliproxy-log-backup` and enables the `cliproxy-log-backup.timer` user unit (skip with `--no-timer`).
+5. Installs `~/.local/bin/cliproxy-log-backup` and enables the `cliproxy-log-backup.timer` user unit with the directories used here (skip with `--no-timer`).
 
 It never touches CLIProxyAPI. **Save `~/.config/cliproxy-log/restic-password` in Proton Pass** (for example as "cliproxy-log restic backup"): without it the NAS backups cannot be decrypted.
 
@@ -192,7 +192,7 @@ On a new computer, put the restic password from Proton Pass into `~/.config/clip
 
 ```sh
 systemctl --user disable --now cliproxy-log-backup.timer
-rm -f ~/.config/systemd/user/cliproxy-log-backup.{service,timer} ~/.local/bin/cliproxy-log-backup
+rm -rf ~/.config/systemd/user/cliproxy-log-backup.{service,timer,service.d} ~/.local/bin/cliproxy-log-backup
 systemctl --user daemon-reload
 docker compose -f deploy/clickhouse/docker-compose.yml down
 ```

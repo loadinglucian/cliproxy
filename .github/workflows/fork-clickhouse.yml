@@ -45,6 +45,13 @@ jobs:
       - name: Install again (idempotency)
         run: deploy/clickhouse/install.sh --no-timer
 
+      # git replaces files on pull; the rerun must hand the new server config to ClickHouse.
+      - name: Install after a server config change
+        run: |
+          sed -i 's|</clickhouse>|<!-- ci --></clickhouse>|' deploy/clickhouse/config/cliproxy.xml
+          deploy/clickhouse/install.sh --no-timer
+          docker exec cliproxy-clickhouse grep -q -- '<!-- ci -->' /etc/clickhouse-server/config.d/cliproxy.xml
+
       - name: Smoke test, backup, and restore
         run: deploy/clickhouse/test/smoke.sh --with-backup
 

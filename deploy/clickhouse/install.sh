@@ -73,6 +73,11 @@ mkdir -p "$data_dir"
 chmod 0700 "$data_dir"
 make_data_dir "$data_dir/clickhouse"
 make_data_dir "$data_dir/backups"
+# Absolute paths from here on: docker compose resolves relative ones against its own
+# directory, and the backup timer stores them (step 8).
+config_dir="$(cd "$config_dir" && pwd)"
+data_dir="$(cd "$data_dir" && pwd)"
+export CLIPROXY_LOG_CONFIG_DIR="$config_dir" CLIPROXY_LOG_DATA_DIR="$data_dir"
 
 # --- 3. Passwords ---------------------------------------------------------------
 # Each password is generated once and never printed. Files are 0600 in a 0700 dir
@@ -113,6 +118,12 @@ users_file="$config_dir/users.d/cliproxy-users.xml"
 # --- 5. Server --------------------------------------------------------------------
 step "starting ClickHouse"
 docker compose -f "$here/docker-compose.yml" up -d --wait --quiet-pull --remove-orphans
+# A single-file bind mount keeps the file it saw when the container started, and git
+# replaces files on pull, so recreate the container when the server config changed.
+if ! docker exec "$container" cat /etc/clickhouse-server/config.d/cliproxy.xml | cmp -s - "$here/config/cliproxy.xml"; then
+  step "server config changed; recreating ClickHouse"
+  docker compose -f "$here/docker-compose.yml" up -d --wait --force-recreate
+fi
 
 # Runs clickhouse-client inside the container as the admin. The password travels
 # through the environment, never the command line.
@@ -180,8 +191,22 @@ if [ "$install_timer" = 1 ]; then
   unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
   mkdir -p "$unit_dir"
   install -m 0644 "$here/systemd/cliproxy-log-backup.service" "$here/systemd/cliproxy-log-backup.timer" "$unit_dir/"
+  # backup.sh reads the same path overrides as this script; store the ones used here
+  # so the timer backs up this install. systemd expands %, so double it.
+  case "$config_dir$data_dir" in
+    *[\"\\]* | *$'\n'*) die "paths for the backup timer must not contain quotes, backslashes, or newlines" ;;
+  esac
+  mkdir -p "$unit_dir/cliproxy-log-backup.service.d"
+  printf '[Service]\nEnvironment="CLIPROXY_LOG_CONFIG_DIR=%s" "CLIPROXY_LOG_DATA_DIR=%s"\n' \
+    "${config_dir//%/%%}" "${data_dir//%/%%}" >"$unit_dir/cliproxy-log-backup.service.d/paths.conf"
   systemctl --user daemon-reload
   systemctl --user enable --now cliproxy-log-backup.timer
+  # The timer runs under the systemd user manager, which keeps the groups it started
+  # with. With lingering it outlives logouts, so a new docker group membership only
+  # reaches it after a reboot.
+  if ! systemd-run --user --wait --quiet --collect docker info >/dev/null 2>&1; then
+    echo "warning: the backup timer cannot reach Docker; reboot (or run 'sudo systemctl restart user@$(id -u).service') so it picks up the docker group" >&2
+  fi
 fi
 command -v restic >/dev/null || echo "warning: restic is not installed; install it (sudo pacman -S --needed restic) before the first backup" >&2
 

@@ -41,7 +41,8 @@ export RESTIC_PASSWORD_FILE="$config_dir/restic-password"
 restic_args=(--repo "$repository")
 if [[ "$repository" == sftp:* ]]; then
   # Unattended SSH: never prompt, give up on a dead peer instead of hanging.
-  restic_args+=(-o "sftp.command=ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 $nas -s sftp")
+  # sftp.args adds to restic's own ssh command, which keeps the repository's host and user.
+  restic_args+=(-o "sftp.args=-o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4")
 fi
 
 command -v restic >/dev/null || { log "restic is not installed"; exit 1; }
