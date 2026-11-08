@@ -247,7 +247,10 @@ func runWebSocketTurn(t *testing.T, base, marker string) {
 		}
 		t.Fatalf("websocket dial: %v (status %d)", errDial, status)
 	}
-	defer func() { _ = conn.Close() }()
+	// Keep the connection open until the test ends, as a real client does between
+	// turns. Closing right after response.completed races the host's completion
+	// of the turn, which then reports outcome "canceled".
+	t.Cleanup(func() { _ = conn.Close() })
 	msg := fmt.Sprintf(`{"type":"response.create","model":"gpt-test-model","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"%s codex-ws"}]}]}`, marker)
 	if errWrite := conn.WriteMessage(websocket.TextMessage, []byte(msg)); errWrite != nil {
 		t.Fatalf("websocket write: %v", errWrite)
