@@ -314,20 +314,41 @@ func TestCollectorUsageGoesToNewestTurnStartedBeforeIt(t *testing.T) {
 	}
 }
 
-// Image streams arrive as raw reads that can split a line; they must be stored
-// byte for byte, without boundaries added between reads.
-func TestCollectorKeepsRawImageStreamBytes(t *testing.T) {
+// Image executors forward raw reads that can split a line; those must be stored
+// byte for byte. An image endpoint served through a Responses stream still arrives
+// as lines without newlines and must still be reassembled.
+func TestCollectorImageStreamChunkBoundaries(t *testing.T) {
 	h := newHarness(t)
 	h.request("img", "t1", "/v1/images/generations", http.Header{}, `{}`)
 	stream := "event: image_generation.completed\ndata: {\"b64_json\":\"QUJDREVGR0hJSktM\"}\n\n"
 	for i, chunk := range []string{stream[:20], stream[20:47], stream[47:]} {
-		h.feed(pluginabi.MethodResponseInterceptStreamChunk, pluginapi.StreamChunkInterceptRequest{RequestID: "img", ChunkIndex: i, Body: []byte(chunk)})
+		h.feed(pluginabi.MethodResponseInterceptStreamChunk, pluginapi.StreamChunkInterceptRequest{RequestID: "img", SourceFormat: "openai-image", ChunkIndex: i, Body: []byte(chunk)})
 	}
 	h.complete("img", pluginapi.RequestCompletionSucceeded, 200)
+
+	h.request("via-responses", "t2", "/v1/images/generations", http.Header{}, `{}`)
+	for i, line := range []string{
+		"event: response.created",
+		`data: {"type":"response.created","response":{"id":"r1","status":"in_progress"}}`,
+		"event: response.completed",
+		`data: {"type":"response.completed","response":{"id":"r1","status":"completed"}}`,
+	} {
+		h.feed(pluginabi.MethodResponseInterceptStreamChunk, pluginapi.StreamChunkInterceptRequest{RequestID: "via-responses", SourceFormat: "openai-response", ChunkIndex: i, Body: []byte(line)})
+	}
+	h.complete("via-responses", pluginapi.RequestCompletionSucceeded, 200)
 	h.advance(h.cfg.UsageGrace)
 	h.c.sweep(false)
-	if r := h.row(0); r.ResponseKind != kindSSERaw || r.Response != stream {
+
+	got := map[string]row{}
+	for i := range h.rows {
+		r := h.row(i)
+		got[r.RequestID] = r
+	}
+	if r := got["img"]; r.ResponseKind != kindSSERaw || r.Response != stream {
 		t.Fatalf("raw image stream changed: kind %q response %q", r.ResponseKind, r.Response)
+	}
+	if r := got["via-responses"]; r.ResponseKind != kindJSON || r.Response != `{"id":"r1","status":"completed"}` {
+		t.Fatalf("Responses stream on an image endpoint not reassembled: kind %q response %q", r.ResponseKind, r.Response)
 	}
 }
 

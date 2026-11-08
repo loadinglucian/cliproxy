@@ -25,7 +25,7 @@ Requests that never complete (for example the proxy lost track of them) are writ
 - Non-streaming JSON is stored as is, `response_kind = 'json'`.
 - Anthropic SSE streams are rebuilt into the final Messages object: text, thinking, signature and citation deltas are concatenated, `tool_use` input JSON is assembled and parsed, and `message_delta` stop reason and usage are merged.
 - OpenAI Responses streams store the `response` object from the last `response.completed`, `response.failed`, or `response.incomplete` event.
-- Anything else (Chat Completions streams, image streams, a stream cut before its terminal event) stores the raw stream text with `response_kind = 'sse_raw'`. Image streams arrive as raw reads and are stored byte for byte; other streams arrive as lines, and a missing line ending is restored.
+- Anything else (Chat Completions streams, image streams, a stream cut before its terminal event) stores the raw stream text with `response_kind = 'sse_raw'`. Streams from the image executors (response protocol `openai-image`) arrive as raw reads and are stored byte for byte; other streams, including image endpoints served through a Responses stream, arrive as lines, and a missing line ending is restored.
 - No response (failed or canceled before any output) gives `response_kind = 'none'`.
 - Parse problems go to `capture_errors` as fixed descriptions; they never fail the row.
 
