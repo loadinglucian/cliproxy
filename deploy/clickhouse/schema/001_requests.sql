@@ -21,8 +21,10 @@
 --   * Text indexes (GA in 26.x) on client_request and response turn substring and
 --     token searches into posting-list lookups instead of full scans. The latest
 --     client_request of a session contains every earlier user and assistant message,
---     so these two columns cover the whole history; upstream_request is the translated
---     copy of client_request and is not indexed.
+--     so these two columns cover the whole history. upstream_request is not indexed:
+--     it is the same client-format payload after credential selection and model
+--     rewriting (the proxy translates it to the upstream protocol later, where
+--     plugins cannot see it), so it repeats client_request's text.
 --   * The minmax index on started_at lets time-range queries skip granules even
 --     though time is not the leading sort key; a session spans minutes to hours.
 

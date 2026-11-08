@@ -111,7 +111,7 @@ ORDER BY day DESC, input DESC;
 - **Sort by session, not time.** `ORDER BY (machine, session_id, started_at)`. Consecutive requests of a session are ~95% identical, so placing them next to each other lets ZSTD store each one as a reference to the previous. Concurrent sessions interleave in time order and lose this.
 - **Large compression blocks on the body columns** (16-32 MiB instead of 64 KiB-1 MiB), so a block holds dozens of turns rather than one or two.
 - **ZSTD long-range window (16 MiB) on request bodies**, so a multi-megabyte long-context request still finds the previous turn.
-- **Text indexes** (`text`, GA in 26.x) on `client_request` and `response`. `upstream_request` is a translated copy of `client_request` and is not indexed.
+- **Text indexes** (`text`, GA in 26.x) on `client_request` and `response`. `upstream_request` is not indexed: it holds the same client-format payload after credential selection and model rewriting (translation to the upstream protocol happens later, where plugins cannot see it), so it repeats the text of `client_request`.
 - Monthly partitions, a `minmax` index on `started_at` for time ranges, a bloom filter on `request_id`, and no TTL: data is kept forever for now.
 
 Measured with `bench/bench.sh 192` (192 synthetic conversations of 40 turns, 7,680 requests, average request 212 KiB, largest 421 KiB) on the pinned image, against a naive table with the same columns ordered by time with default compression:
@@ -138,7 +138,7 @@ A full scan runs at about 6 GB/s of uncompressed text, so without the index a se
 
 ### Disk expectations
 
-At about 8,000 requests a day, with requests of 200-600 KiB and the upstream copy of each, the raw volume is roughly 3-5 GB a day, 1.2-1.8 TB a year. At the measured 42x that is 30-45 GB a year on disk. Real traffic compresses less well than the synthetic conversations (context compaction, edited system reminders, and sessions without a session ID all break the shared prefix), so plan for 20-40x: **about 30-90 GB a year**, against 779 GB free on ThinkPad. Check the real ratio after a few weeks:
+At about 8,000 requests a day, with requests of 200-600 KiB and the `upstream_request` copy of each, the raw volume is roughly 3-5 GB a day, 1.2-1.8 TB a year. At the measured 42x that is 30-45 GB a year on disk. Real traffic compresses less well than the synthetic conversations (context compaction, edited system reminders, and sessions without a session ID all break the shared prefix), so plan for 20-40x: **about 30-90 GB a year**, against 779 GB free on ThinkPad. Check the real ratio after a few weeks:
 
 ```sql
 SELECT formatReadableSize(sum(data_uncompressed_bytes)) AS raw, formatReadableSize(sum(bytes_on_disk)) AS on_disk,
