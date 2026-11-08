@@ -47,39 +47,28 @@ jobs:
     env:
       CGO_ENABLED: "1"
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install mise
-        uses: jdx/mise-action@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          install: false
+          persist-credentials: false
 
-      - name: Select Go through mise
-        # Uses the repository mise.toml when present, otherwise the go directive in go.mod.
-        run: |
-          if [ -f mise.toml ]; then
-            mise install
-            echo "GO_RUN=mise exec --" >> "$GITHUB_ENV"
-          else
-            version="$(awk '/^go /{print $2; exit}' go.mod)"
-            mise install "go@${version}"
-            echo "GO_RUN=mise exec go@${version} --" >> "$GITHUB_ENV"
-          fi
+      # Installs Go from mise.toml/mise.lock; same pins as fork-ci.yml.
+      - uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e # v5.2.3
+        with:
+          version: 2026.10.18
 
       - name: Go version
-        run: $GO_RUN go version
+        run: go version
 
       - name: Vet
-        run: $GO_RUN go vet ./plugins/cliproxy-log/... && $GO_RUN go vet -tags e2e ./plugins/cliproxy-log/e2e
+        run: go vet ./plugins/cliproxy-log/... && go vet -tags e2e ./plugins/cliproxy-log/e2e
 
       - name: Unit tests
-        run: $GO_RUN go test -race -count=1 ./plugins/cliproxy-log/...
+        run: go test -race -count=1 ./plugins/cliproxy-log/...
 
       - name: Build proxy and plugin
         run: |
-          $GO_RUN go build -o "$RUNNER_TEMP/cli-proxy-api" ./cmd/server
-          $GO_RUN go build -buildmode=c-shared -o "$RUNNER_TEMP/cliproxy-log.so" ./plugins/cliproxy-log
+          go build -o "$RUNNER_TEMP/cli-proxy-api" ./cmd/server
+          go build -buildmode=c-shared -o "$RUNNER_TEMP/cliproxy-log.so" ./plugins/cliproxy-log
           rm -f "$RUNNER_TEMP/cliproxy-log.h"
 
       - name: Wait for ClickHouse
@@ -96,4 +85,4 @@ jobs:
           CLIPROXY_LOG_E2E_CLICKHOUSE_URL: http://127.0.0.1:8123
           CLIPROXY_LOG_E2E_SERVER_BIN: ${{ runner.temp }}/cli-proxy-api
           CLIPROXY_LOG_E2E_PLUGIN: ${{ runner.temp }}/cliproxy-log.so
-        run: $GO_RUN go test -tags e2e -count=1 -v ./plugins/cliproxy-log/e2e
+        run: go test -tags e2e -count=1 -v ./plugins/cliproxy-log/e2e

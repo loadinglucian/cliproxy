@@ -371,9 +371,6 @@ plugins:
 func applySchema(t *testing.T, chURL, root string) {
 	t.Helper()
 	path := filepath.Join(root, "deploy", "clickhouse", "schema", "001_requests.sql")
-	if _, errStat := os.Stat(path); errStat != nil {
-		path = filepath.Join(root, "plugins", "cliproxy-log", "testdata", "schema.sql")
-	}
 	t.Logf("applying schema %s", path)
 	for _, stmt := range splitSQL(string(readFile(t, path))) {
 		if _, errQuery := chQuery(chURL, stmt); errQuery != nil {

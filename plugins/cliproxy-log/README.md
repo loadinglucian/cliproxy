@@ -171,4 +171,4 @@ docker run -d --rm -p 127.0.0.1:18123:8123 -e CLICKHOUSE_SKIP_USER_SETUP=1 click
 CLIPROXY_LOG_E2E_CLICKHOUSE_URL=http://127.0.0.1:18123 mise exec -- go test -tags e2e -v ./plugins/cliproxy-log/e2e
 ```
 
-It applies `deploy/clickhouse/schema/001_requests.sql` when present and otherwise `testdata/schema.sql`, a test-only copy of the column contract. CI runs both suites in `.github/workflows/fork-plugin.yml`.
+It applies the production schema, `deploy/clickhouse/schema/001_requests.sql`. CI runs both suites in `.github/workflows/fork-plugin.yml`.
