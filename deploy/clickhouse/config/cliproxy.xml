@@ -1,0 +1,66 @@
+<?xml version="1.0"?>
+<!-- Server overrides for the cliproxy-log ClickHouse, merged over the image's config.xml. -->
+<clickhouse>
+    <!-- The container runs as the installing user, who cannot write the image's
+         /var/log/clickhouse-server. Log to the console instead; Docker keeps a
+         size-capped copy (see docker-compose.yml). -->
+    <logger>
+        <level>information</level>
+        <log remove="remove"/>
+        <errorlog remove="remove"/>
+        <console>1</console>
+    </logger>
+
+    <!-- Only HTTP (published on 127.0.0.1) and the native port (reachable through
+         `docker exec`) are needed. -->
+    <mysql_port remove="remove"/>
+    <postgresql_port remove="remove"/>
+    <interserver_http_port remove="remove"/>
+
+    <!-- Small database on a shared laptop: keep caches modest. -->
+    <mark_cache_size>1073741824</mark_cache_size>
+
+    <!-- Target for BACKUP ... TO Disk('backups', ...). backup.sh uploads the result
+         with restic and deletes it. -->
+    <storage_configuration>
+        <disks>
+            <backups>
+                <type>local</type>
+                <path>/backups/</path>
+            </backups>
+        </disks>
+    </storage_configuration>
+    <backups>
+        <allowed_disk>backups</allowed_disk>
+        <allowed_path>/backups/</allowed_path>
+    </backups>
+
+    <!-- System logs: keep the ones useful for debugging for 30 days and drop the
+         high-volume profiling tables, which would otherwise grow without limit. -->
+    <query_log>
+        <ttl>event_date + INTERVAL 30 DAY DELETE</ttl>
+    </query_log>
+    <part_log>
+        <ttl>event_date + INTERVAL 30 DAY DELETE</ttl>
+    </part_log>
+    <error_log>
+        <ttl>event_date + INTERVAL 30 DAY DELETE</ttl>
+    </error_log>
+    <crash_log>
+        <ttl>event_date + INTERVAL 30 DAY DELETE</ttl>
+    </crash_log>
+    <backup_log>
+        <ttl>event_date + INTERVAL 90 DAY DELETE</ttl>
+    </backup_log>
+    <trace_log remove="remove"/>
+    <query_thread_log remove="remove"/>
+    <query_views_log remove="remove"/>
+    <background_schedule_pool_log remove="remove"/>
+    <text_log remove="remove"/>
+    <metric_log remove="remove"/>
+    <instrumentation_trace_log remove="remove"/>
+    <query_metric_log remove="remove"/>
+    <asynchronous_metric_log remove="remove"/>
+    <opentelemetry_span_log remove="remove"/>
+    <processors_profile_log remove="remove"/>
+</clickhouse>
