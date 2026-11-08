@@ -142,7 +142,7 @@ Verified against the proxy's file watcher and `internal/pluginhost/host.go` (`Ap
 
 - **Enabling, disabling, or editing `plugins.configs.cliproxy-log`: no restart.** Saving `config.yaml` triggers `ApplyConfig`, which loads the plugin and calls `plugin.register`, calls `plugin.reconfigure` with the new YAML, or unloads it. The plugin applies new settings (including `machines` and the ClickHouse target) on the fly.
 - **Replacing the `.so` at the same path: needs a restart.** The host compares paths only, so an overwritten file is ignored until the next start.
-- **A new versioned file (`cliproxy-log-v0.2.0.so`) plus a config save hot-reloads**, but Go shared libraries cannot be unloaded: the old copy stays mapped and retired until the plugin is disabled or the proxy exits. The host quiesces the old copy first, and the plugin stops its collector and writer then, so only the new copy replays the spool; requests in flight during the swap end up as `abandoned` rows. Restart the proxy for binary updates.
+- **A new versioned file (`cliproxy-log-v0.2.0.so`) plus a config save hot-reloads**, but Go shared libraries cannot be unloaded: the old copy stays mapped and retired until the plugin is disabled or the proxy exits. The host quiesces the old copy first, and the plugin stops its collector and writer then, so only the new copy replays the spool; requests in flight during the swap end up as `abandoned` rows. While ClickHouse is stalled, that flush can hold the config apply for up to about 15 s (requests keep flowing). Restart the proxy for binary updates.
 
 ## WebSocket turns
 
@@ -154,6 +154,7 @@ Codex WebSocket turns are visible to the same hooks as HTTP requests. `sdk/api/h
 - A stream cut at `max-body-bytes` reassembles only what was captured; the row is marked `truncated`.
 - With Codex response steering enabled, several client inputs can share one execution; they are logged as one row with the last upstream body.
 - Hooks see the client-protocol payload, not the bytes the executor finally sends upstream (see `upstream_request`).
+- Stream chunks reported as `openai-image` are stored as raw bytes. A third-party plugin executor that serves `openai-image` as lines without line endings would be stored without boundaries; none is used here.
 
 ## Tests
 
