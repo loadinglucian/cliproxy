@@ -53,6 +53,11 @@ if ! docker info >/dev/null 2>&1; then
   die "cannot reach the Docker daemon as $(id -un). Start it with 'sudo systemctl enable --now docker' and add yourself to the docker group with 'sudo usermod -aG docker $(id -un)', then log in again."
 fi
 docker compose version >/dev/null 2>&1 || die "the docker compose plugin is not installed"
+# With only docker.socket enabled, dockerd (and with it this container) starts at boot
+# only once something runs a docker command, so the plugin would spool until then.
+if command -v systemctl >/dev/null && [ "$(systemctl is-enabled docker.service 2>/dev/null)" != enabled ]; then
+  echo "warning: docker.service is not enabled, so ClickHouse will not start at boot; run 'sudo systemctl enable docker'" >&2
+fi
 
 # --- 2. Directories -------------------------------------------------------------
 # ClickHouse compresses its own files, so btrfs copy-on-write and compression only

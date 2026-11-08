@@ -13,7 +13,7 @@
         <cliproxy_reader>
             <!-- readonly=2 allows read queries and per-query settings (the Play UI and
                  most clients send some), but no writes or DDL. The constraints keep
-                 the limits below from being raised. -->
+                 the limits below from being raised, or switched off with 0. -->
             <readonly>2</readonly>
             <max_execution_time>300</max_execution_time>
             <max_memory_usage>8589934592</max_memory_usage>
@@ -22,9 +22,11 @@
                     <const/>
                 </readonly>
                 <max_execution_time>
+                    <min>1</min>
                     <max>300</max>
                 </max_execution_time>
                 <max_memory_usage>
+                    <min>1</min>
                     <max>8589934592</max>
                 </max_memory_usage>
             </constraints>

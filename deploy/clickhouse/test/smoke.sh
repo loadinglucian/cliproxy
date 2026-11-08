@@ -123,6 +123,8 @@ denied reader "INSERT INTO cliproxy_log.requests (request_id) VALUES ('reader')"
 denied reader "DROP TABLE cliproxy_log.requests"
 denied reader "CREATE TABLE cliproxy_log.x (a UInt8) ENGINE = Memory"
 denied reader "SELECT 1 SETTINGS max_execution_time = 100000"
+denied reader "SELECT 1 SETTINGS max_execution_time = 0"
+denied reader "SELECT 1 SETTINGS max_memory_usage = 0"
 denied reader "SELECT 1 SETTINGS readonly = 0"
 
 # --- Network -------------------------------------------------------------------------

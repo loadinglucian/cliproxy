@@ -53,7 +53,7 @@ To upgrade ClickHouse, change the image tag and digest in `docker-compose.yml` (
 | User | Password file | Can do | Reachable from |
 | --- | --- | --- | --- |
 | `cliproxy_writer` | `writer-password` | `INSERT`, `SELECT` on `cliproxy_log.*` | `127.0.0.1:8123` |
-| `cliproxy_reader` | `reader-password` | `SELECT` on `cliproxy_log.*`; queries stop after 300 s or 8 GiB and the limits cannot be raised | `127.0.0.1:8123` |
+| `cliproxy_reader` | `reader-password` | `SELECT` on `cliproxy_log.*`; queries stop after 300 s or 8 GiB and the limits cannot be raised or turned off | `127.0.0.1:8123` |
 | `cliproxy_admin` | `admin-password` | everything (schema changes, backups) | inside the container only (`docker exec`) |
 
 There is no `default` user and no passwordless access. Password files hold 64 hex characters without a trailing newline. Inserts by the writer are batched server-side (`async_insert`) and return once written.
@@ -153,7 +153,7 @@ Run it as `cliproxy_admin` (see Restore for the command).
 `cliproxy-log-backup.timer` runs `~/.local/bin/cliproxy-log-backup` nightly at about 03:30, catching up after the laptop was off. Each run:
 
 1. `BACKUP DATABASE cliproxy_log TO Disk('backups', 'cliproxy_log')`: a consistent copy in `~/.local/share/cliproxy-log/backups/cliproxy_log`, taken while the plugin keeps writing.
-2. `restic backup` of that directory into `sftp:storageserver:/home/cliproxy-log-backups/thinkpad`, which is `~/cliproxy-log-backups/thinkpad` in the NAS login's home. This uses the same SSH/SFTP route as the fleet credential backup but its own repository and `restic-password`, so the two never share keys or retention. Unchanged data parts deduplicate, so a night uploads roughly what was written that day.
+2. `restic backup` of that directory into `sftp:storageserver:/home/cliproxy-log-backups/thinkpad`, which is `~/cliproxy-log-backups/thinkpad` in the NAS login's home. This uses the same SSH/SFTP route as the fleet credential backup but its own repository and `restic-password`, so the two never share keys or retention. Unchanged data parts deduplicate, but background merges rewrite and recompress parts within the current month, so a night can upload several times what was written that day.
 3. `restic forget --prune` keeping 7 daily, 4 weekly, and 6 monthly snapshots, then `restic check` on a 5% sample.
 4. Deletes the local copy (also when a step fails).
 
@@ -173,7 +173,7 @@ restic -r "$repo" restore latest --target ~/.local/share/cliproxy-log/backups/re
 find ~/.local/share/cliproxy-log/backups/restore -name .backup   # note the directory holding .backup
 ```
 
-Then, as admin (`CLICKHOUSE_PASSWORD="$(cat ~/.config/cliproxy-log/admin-password)" docker exec -it -e CLICKHOUSE_USER=cliproxy_admin -e CLICKHOUSE_PASSWORD cliproxy-clickhouse clickhouse-client`), with `<dir>` being that directory relative to `backups/`:
+Then, as admin (`CLICKHOUSE_PASSWORD="$(cat ~/.config/cliproxy-log/admin-password)" docker exec -it -e CLICKHOUSE_USER=cliproxy_admin -e CLICKHOUSE_PASSWORD cliproxy-clickhouse clickhouse-client`), with `<dir>` being that directory relative to `backups/restore/` (restic recreates the full original path, so it looks like `home/loadinglucian/.local/share/cliproxy-log/backups/cliproxy_log`):
 
 ```sql
 -- Side by side, to inspect or copy rows back
