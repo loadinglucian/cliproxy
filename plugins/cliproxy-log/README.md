@@ -146,7 +146,7 @@ Verified against the proxy's file watcher and `internal/pluginhost/host.go` (`Ap
 
 ## WebSocket turns
 
-Codex WebSocket turns are visible to the same hooks as HTTP requests. `sdk/api/handlers/openai/openai_responses_websocket.go` runs every `response.create` turn through `ExecuteStreamWithAuthManager`, which calls the request interceptors, the stream chunk interceptor, the usage observer, and `request.complete` with a fresh `RequestID`. The WebSocket response observer only fires when the upstream connection is itself a WebSocket (Codex OAuth or `websockets: true` keys); the plugin uses those events as a fallback response source and for the credential label. The e2e test covers a client WebSocket turn against an HTTP upstream and asserts its row (`transport = 'websocket'`, reassembled response, tokens).
+Codex WebSocket turns are visible to the same hooks as HTTP requests. `sdk/api/handlers/openai/openai_responses_websocket.go` runs every `response.create` turn through `ExecuteStreamWithAuthManager`, which calls the request interceptors, the stream chunk interceptor, the usage observer, and `request.complete` with a fresh `RequestID`. The WebSocket response observer only fires when the upstream connection is itself a WebSocket (Codex OAuth or `websockets: true` keys); the plugin uses those events as a fallback response source and for the credential label. `outcome` is what the host reports: a client that disconnects right after `response.completed` (for example quitting after its last turn) can get a `canceled` row that still holds the complete response. The e2e test covers a client WebSocket turn against an HTTP upstream and asserts its row (`transport = 'websocket'`, reassembled response, tokens).
 
 ## Known limits
 
