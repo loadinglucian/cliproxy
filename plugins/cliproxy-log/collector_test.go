@@ -280,11 +280,46 @@ func TestCollectorSideModelUsageStaysOffLaterTurn(t *testing.T) {
 	}
 }
 
+// A turn whose usage never arrives must not take the next turn's record, and a
+// side-model record for the next turn must not fall back onto it either.
+func TestCollectorUsageGoesToNewestTurnStartedBeforeIt(t *testing.T) {
+	h := newHarness(t)
+	ws := http.Header{"Upgrade": {"websocket"}, "Authorization": {"Bearer " + testKey}}
+	h.request("turn1", "conn", "/v1/responses", ws, `{"input":"one"}`)
+	h.complete("turn1", pluginapi.RequestCompletionSucceeded, 200)
+
+	h.advance(time.Second)
+	h.request("turn2", "conn", "/v1/responses", ws, `{"input":"two"}`)
+	turn2Start := h.clock
+	primary := usageRecord("conn", "claude-real", false)
+	primary.RequestedAt = turn2Start
+	primary.Detail.OutputTokens = 222
+	h.feed(pluginabi.MethodUsageHandle, primary)
+	side := usageRecord("conn", "image-side-model", false)
+	side.Alias = "claude-alias"
+	side.RequestedAt = turn2Start
+	side.Detail.OutputTokens = 7
+	h.feed(pluginabi.MethodUsageHandle, side)
+	h.complete("turn2", pluginapi.RequestCompletionSucceeded, 200)
+	h.advance(h.cfg.UsageGrace)
+	h.c.sweep(false)
+
+	got := map[string]row{}
+	for i := range h.rows {
+		r := h.row(i)
+		got[r.RequestID] = r
+	}
+	if len(got) != 2 || got["turn1"].OutputTokens != 0 || got["turn2"].OutputTokens != 222 {
+		t.Fatalf("usage misattributed: turn1 %d, turn2 %d", got["turn1"].OutputTokens, got["turn2"].OutputTokens)
+	}
+}
+
 // Without an account email the host reports the raw client key as the usage
 // source; it must not reach the row.
 func TestCollectorNeverStoresKeyFallbackAsAccount(t *testing.T) {
 	for _, tc := range []struct{ name, source string }{
 		{"client key", testKey},
+		{"client key shaped like an email", "client@key"},
 		{"credential key", "sk-upstream-credential"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -292,6 +327,9 @@ func TestCollectorNeverStoresKeyFallbackAsAccount(t *testing.T) {
 			h.request("r1", "t1", "/v1/messages", http.Header{"X-Api-Key": {testKey}}, `{}`)
 			rec := usageRecord("t1", "claude-real", false)
 			rec.Source = tc.source
+			if tc.source == "client@key" {
+				rec.APIKey = tc.source
+			}
 			h.feed(pluginabi.MethodUsageHandle, rec)
 			h.complete("r1", pluginapi.RequestCompletionSucceeded, 200)
 			if r := h.row(0); r.Account != "" {

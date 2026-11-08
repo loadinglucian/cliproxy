@@ -296,11 +296,13 @@ func (c *collector) onWebSocketEvent(ev pluginapi.WebSocketResponseEvent, at tim
 
 // onUsage attaches a usage record. The host gives usage records their own per-attempt
 // ID, so they correlate by TraceID (the inbound HTTP request) instead. On a WebSocket
-// connection every turn shares one TraceID; turns run one at a time, so the oldest
-// turn still waiting for usage is the match. A record whose attempt started before a
-// turn was first seen belongs to an earlier turn (a late record, or the side-model
-// record an image tool publishes after the primary one) and never moves to a later
-// turn.
+// connection every turn shares one TraceID and turns run one at a time, so a record
+// belongs to the newest turn first seen no later than its attempt started
+// (RequestedAt and firstSeen both come from the proxy's wall clock). When that turn
+// already has successful usage, as when an image tool publishes a side-model record
+// after the primary one, the record is ignored rather than moved to another turn.
+// Records without an attempt time go to the oldest turn still waiting for usage,
+// preferring a model match.
 func (c *collector) onUsage(rec pluginapi.UsageRecord) {
 	if rec.TraceID == "" {
 		return
@@ -310,17 +312,31 @@ func (c *collector) onUsage(rec pluginapi.UsageRecord) {
 		return
 	}
 	var target *entry
-	for _, e := range candidates {
-		if usageCanAttach(e, rec) && usageModelMatches(e, rec) {
-			target = e
+	if !rec.RequestedAt.IsZero() {
+		// byTrace lists turns in the order they were first seen.
+		for i := len(candidates) - 1; i >= 0; i-- {
+			e := candidates[i]
+			if rec.RequestedAt.Before(e.firstSeen) {
+				continue
+			}
+			if !hasGoodUsage(e) {
+				target = e
+			}
 			break
 		}
-	}
-	if target == nil {
+	} else {
 		for _, e := range candidates {
-			if usageCanAttach(e, rec) {
+			if !hasGoodUsage(e) && usageModelMatches(e, rec) {
 				target = e
 				break
+			}
+		}
+		if target == nil {
+			for _, e := range candidates {
+				if !hasGoodUsage(e) {
+					target = e
+					break
+				}
 			}
 		}
 	}
@@ -343,16 +359,6 @@ func (c *collector) onUsage(rec pluginapi.UsageRecord) {
 }
 
 func hasGoodUsage(e *entry) bool { return e.usage != nil && !e.usage.Failed }
-
-// usageCanAttach reports whether rec may still improve e: e lacks successful usage
-// and rec's attempt did not start before e was first seen. RequestedAt and firstSeen
-// both come from the proxy process's wall clock.
-func usageCanAttach(e *entry, rec pluginapi.UsageRecord) bool {
-	if hasGoodUsage(e) {
-		return false
-	}
-	return rec.RequestedAt.IsZero() || !rec.RequestedAt.Before(e.firstSeen)
-}
 
 func usageModelMatches(e *entry, rec pluginapi.UsageRecord) bool {
 	return rec.Model != "" && (rec.Model == e.servedModel || rec.Model == e.requestedModel || rec.Alias == e.requestedModel)
