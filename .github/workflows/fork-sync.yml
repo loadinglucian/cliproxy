@@ -40,7 +40,8 @@ concurrency:
 
 jobs:
   # Runs on dry runs too, so workflows added by an earlier upstream merge are
-  # switched off even when this run finds nothing new.
+  # switched off even when this run finds nothing new. publish waits for it, so
+  # nothing is pushed while an upstream workflow may still be enabled.
   disable-foreign-workflows:
     name: disable-foreign-workflows
     runs-on: ubuntu-24.04
@@ -101,7 +102,7 @@ jobs:
 
   publish:
     name: publish
-    needs: check
+    needs: [check, disable-foreign-workflows]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
