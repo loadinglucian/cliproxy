@@ -1,0 +1,99 @@
+name: fork-plugin
+
+# Unit and end-to-end tests for the cliproxy-log plugin. The e2e job runs the real
+# proxy with the plugin against a fake Claude/Codex upstream and a ClickHouse service.
+
+on:
+  pull_request:
+    paths:
+      - "plugins/cliproxy-log/**"
+      - "deploy/clickhouse/**"
+      - ".github/workflows/fork-plugin.yml"
+      - "go.mod"
+      - "go.sum"
+      - "mise.toml"
+      - "cmd/**"
+      - "internal/**"
+      - "sdk/**"
+  push:
+    branches: [main]
+    paths:
+      - "plugins/cliproxy-log/**"
+      - "deploy/clickhouse/**"
+      - ".github/workflows/fork-plugin.yml"
+      - "go.mod"
+      - "go.sum"
+      - "mise.toml"
+      - "cmd/**"
+      - "internal/**"
+      - "sdk/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cliproxy-log:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      clickhouse:
+        image: clickhouse/clickhouse-server:26.8.34.13
+        env:
+          # Default user without a password, reachable over the network; test only.
+          CLICKHOUSE_SKIP_USER_SETUP: "1"
+        ports:
+          - 8123:8123
+    env:
+      CGO_ENABLED: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install mise
+        uses: jdx/mise-action@v2
+        with:
+          install: false
+
+      - name: Select Go through mise
+        # Uses the repository mise.toml when present, otherwise the go directive in go.mod.
+        run: |
+          if [ -f mise.toml ]; then
+            mise install
+            echo "GO_RUN=mise exec --" >> "$GITHUB_ENV"
+          else
+            version="$(awk '/^go /{print $2; exit}' go.mod)"
+            mise install "go@${version}"
+            echo "GO_RUN=mise exec go@${version} --" >> "$GITHUB_ENV"
+          fi
+
+      - name: Go version
+        run: $GO_RUN go version
+
+      - name: Vet
+        run: $GO_RUN go vet ./plugins/cliproxy-log/... && $GO_RUN go vet -tags e2e ./plugins/cliproxy-log/e2e
+
+      - name: Unit tests
+        run: $GO_RUN go test -race -count=1 ./plugins/cliproxy-log/...
+
+      - name: Build proxy and plugin
+        run: |
+          $GO_RUN go build -o "$RUNNER_TEMP/cli-proxy-api" ./cmd/server
+          $GO_RUN go build -buildmode=c-shared -o "$RUNNER_TEMP/cliproxy-log.so" ./plugins/cliproxy-log
+          rm -f "$RUNNER_TEMP/cliproxy-log.h"
+
+      - name: Wait for ClickHouse
+        run: |
+          for _ in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8123/ping >/dev/null; then exit 0; fi
+            sleep 1
+          done
+          echo "ClickHouse did not become ready" >&2
+          exit 1
+
+      - name: End-to-end test
+        env:
+          CLIPROXY_LOG_E2E_CLICKHOUSE_URL: http://127.0.0.1:8123
+          CLIPROXY_LOG_E2E_SERVER_BIN: ${{ runner.temp }}/cli-proxy-api
+          CLIPROXY_LOG_E2E_PLUGIN: ${{ runner.temp }}/cliproxy-log.so
+        run: $GO_RUN go test -tags e2e -count=1 -v ./plugins/cliproxy-log/e2e
