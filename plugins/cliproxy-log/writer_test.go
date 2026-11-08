@@ -248,6 +248,28 @@ func TestWriterDropsCorruptSpoolFileAndReplaysTheRest(t *testing.T) {
 	}
 }
 
+// An exception reported after an HTTP 200 is not an acknowledgement either.
+func TestWriterSpoolsWhenOKCarriesException(t *testing.T) {
+	var query string
+	ch := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		query = r.URL.RawQuery
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("X-ClickHouse-Exception-Code", "241")
+		_, _ = w.Write([]byte("Code: 241. DB::Exception: Memory limit exceeded"))
+	}))
+	defer ch.Close()
+	h := newWriterHarness(t, ch.URL)
+	writtenBefore, spooledBefore := stats.rowsWritten.Load(), stats.rowsSpooled.Load()
+	h.w.add([]byte(`{"request_id":"a"}`))
+	h.w.cycle(true)
+	if stats.rowsWritten.Load() != writtenBefore || stats.rowsSpooled.Load() != spooledBefore+1 {
+		t.Fatalf("exception after 200 counted as written")
+	}
+	if !strings.Contains(query, "wait_end_of_query=1") {
+		t.Fatalf("insert does not ask ClickHouse to wait for the end of the query: %s", query)
+	}
+}
+
 func TestWriterStopFlushes(t *testing.T) {
 	ch := newFakeClickHouse(t)
 	h := newWriterHarness(t, ch.URL)

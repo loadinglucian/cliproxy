@@ -224,9 +224,12 @@ func (w *writer) markUnhealthy(err error) {
 func (w *writer) send(body []byte) error {
 	cfg := w.cfg()
 	query := fmt.Sprintf("INSERT INTO `%s`.`requests` FORMAT JSONEachRow", cfg.ClickHouseDatabase)
+	// wait_end_of_query makes ClickHouse hold the reply until the insert finishes, so
+	// an insert error arrives as an HTTP error status rather than after a 200.
 	endpoint := cfg.ClickHouseURL + "/?" + url.Values{
 		"query":                  {query},
 		"date_time_input_format": {"best_effort"},
+		"wait_end_of_query":      {"1"},
 	}.Encode()
 	req, errReq := http.NewRequestWithContext(w.ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if errReq != nil {
@@ -263,6 +266,9 @@ func (w *writer) send(body []byte) error {
 		return fmt.Errorf("clickhouse insert status %d: read response: %w", resp.StatusCode, errRead)
 	}
 	if resp.StatusCode == http.StatusOK {
+		if code := resp.Header.Get("X-ClickHouse-Exception-Code"); code != "" {
+			return fmt.Errorf("clickhouse insert status 200 with exception Code: %s", truncateLabel(code))
+		}
 		return nil
 	}
 	errSend := fmt.Errorf("clickhouse insert status %d %s", resp.StatusCode, clickHouseErrorCode(snippet))
