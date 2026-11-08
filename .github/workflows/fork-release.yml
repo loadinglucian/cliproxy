@@ -108,7 +108,10 @@ jobs:
             echo "::error::Source maps found in dist/"
             exit 1
           fi
-          (cd dist/assets && sha256sum -- * | sort -k2 > checksums.txt)
+          # Hash into dist/ first: writing checksums.txt inside dist/assets could
+          # race the glob and list the manifest itself.
+          (cd dist/assets && sha256sum -- * | sort -k2 > ../checksums.txt)
+          mv dist/checksums.txt dist/assets/checksums.txt
           cat dist/assets/checksums.txt
           {
             echo "Built from upstream [router-for-me/CLIProxyAPI ${UPSTREAM_TAG}](https://github.com/router-for-me/CLIProxyAPI/releases/tag/${UPSTREAM_TAG}) plus this repository's own additions (see FORK.md)."
