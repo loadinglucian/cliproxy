@@ -52,11 +52,16 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      # The tag name promises which upstream release is inside; refuse to publish
-      # if that upstream tag is not actually part of the tagged commit.
-      - name: Verify upstream base
+      # Only commits that reached main through the ruleset (PR plus required checks)
+      # are released. The tag name promises which upstream release is inside; refuse
+      # to publish if that upstream tag is not actually part of the tagged commit.
+      - name: Verify tagged commit
         run: |
           set -euo pipefail
+          if ! git merge-base --is-ancestor HEAD refs/remotes/origin/main; then
+            echo "::error::${TAG} points at $(git rev-parse --short HEAD), which is not on main"
+            exit 1
+          fi
           upstream_tag="${TAG%-lucian.*}"
           git fetch --quiet --no-tags https://github.com/router-for-me/CLIProxyAPI.git \
             "+refs/tags/${upstream_tag}:refs/fork-sync/${upstream_tag}"
