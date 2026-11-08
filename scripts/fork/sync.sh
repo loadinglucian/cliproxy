@@ -12,6 +12,7 @@
 #   3. Build and test with scripts/fork/build.sh (the commands fork-ci runs).
 #   4. Push, open the PR, and enable auto-merge with a merge commit. Squash or rebase
 #      would drop upstream history, so the next upstream merge would conflict.
+#      When the PR is already open, only enable auto-merge if it is still off.
 #   On a conflict or failed check nothing is pushed: an issue is opened or updated
 #   for loadinglucian and the script exits 1 so the workflow run ends red, which is
 #   what sends GitHub's failure email. It also exits 1 when any open sync PR has
@@ -43,7 +44,7 @@ remote="origin"
 base="main"
 upstream_url="https://github.com/${upstream_repo}.git"
 
-usage() { sed -n '2,31p' "$0" >&2; }
+usage() { sed -n '2,32p' "$0" >&2; }
 
 while [[ $# -gt 0 ]]; do
 	case "$1" in
@@ -64,6 +65,7 @@ cd "$repo_root"
 work_dir="$(mktemp -d)"
 orig_ref=""
 failing_prs=""
+merge_started=0
 
 # --- output helpers ---------------------------------------------------------
 
@@ -95,8 +97,9 @@ gh_read() {
 	fi
 }
 
+# cleanup aborts only a merge this run started, never one the caller left in progress.
 cleanup() {
-	if git rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1; then
+	if [[ "$merge_started" -eq 1 ]] && git rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1; then
 		git merge --abort || true
 	fi
 	if [[ -n "$orig_ref" ]]; then
@@ -132,22 +135,25 @@ resolve_tag() {
 }
 
 # check_open_sync_prs records open sync PRs with failing checks (reported by finish)
-# and sets existing_pr to the open PR for this tag's branch, if any.
+# and sets existing_pr to the open PR for this tag's branch, if any, and
+# existing_pr_auto to whether auto-merge is enabled on it.
 check_open_sync_prs() {
-	local rows number head failed url
+	local rows number head failed auto url
 	rows="$(gh_read pr list --repo "$repo" --state open --limit 100 \
-		--json number,headRefName,url,statusCheckRollup \
+		--json number,headRefName,url,statusCheckRollup,autoMergeRequest \
 		--jq '.[] | select(.headRefName | startswith("sync/upstream-"))
 			| [.number, .headRefName,
 				([.statusCheckRollup[]?
 					| select(((.conclusion // "") | IN("FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE"))
 						or ((.state // "") | IN("FAILURE", "ERROR")))] | length),
-				.url] | @tsv')"
+				(.autoMergeRequest != null), .url] | @tsv')"
 	existing_pr=""
-	while IFS=$'\t' read -r number head failed url; do
+	existing_pr_auto=""
+	while IFS=$'\t' read -r number head failed auto url; do
 		[[ -n "$number" ]] || continue
 		if [[ "$head" == "$branch" ]]; then
 			existing_pr="$url"
+			existing_pr_auto="$auto"
 		fi
 		if [[ "$failed" -gt 0 ]]; then
 			failing_prs+="- ${url} (${head}, ${failed} failing check(s))"$'\n'
@@ -202,6 +208,14 @@ resolution_steps() {
 EOF
 }
 
+# enable_auto_merge turns on auto-merge with a merge commit for the sync PR at URL $1.
+# Squash or rebase would drop the upstream parent and break every later sync.
+enable_auto_merge() {
+	local number="${1##*/}"
+	gh pr merge "$number" --repo "$repo" --auto --merge \
+		--subject "chore: merge upstream ${tag} (#${number})" --body ""
+}
+
 # report_failure files or updates the issue for this tag, writes the step summary,
 # and exits 1 so the workflow run fails and GitHub emails the maintainer.
 report_failure() {
@@ -248,6 +262,9 @@ report_failure() {
 if [[ -n "${GITHUB_ACTIONS:-}" && "$dry_run" -eq 0 && -z "${GH_TOKEN:-}" ]]; then
 	die "GH_TOKEN is empty: add the SYNC_TOKEN repository secret (see FORK.md)"
 fi
+if git rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1; then
+	die "a merge is already in progress; finish or abort it first"
+fi
 if ! git diff --quiet || ! git diff --cached --quiet; then
 	die "working tree has uncommitted changes; commit or set them aside first"
 fi
@@ -271,6 +288,15 @@ if git merge-base --is-ancestor "$tag_commit" "${remote}/${base}"; then
 fi
 if [[ -n "$existing_pr" ]]; then
 	summary "Sync PR for ${tag} is already open: ${existing_pr}"
+	# An earlier run may have opened the PR but failed before enabling auto-merge.
+	if [[ "$existing_pr_auto" != "true" ]]; then
+		if [[ "$dry_run" -eq 1 ]]; then
+			summary "Dry run: would enable auto-merge (merge commit) on ${existing_pr}."
+		else
+			enable_auto_merge "$existing_pr"
+			summary "Enabled auto-merge (merge commit) on ${existing_pr}."
+		fi
+	fi
 	finish
 fi
 
@@ -283,6 +309,7 @@ if git ls-remote --exit-code --heads "$remote" "$branch" >/dev/null 2>&1; then
 	summary "Reusing existing branch ${branch} from ${remote}."
 else
 	git switch --quiet --no-track -C "$branch" "${remote}/${base}"
+	merge_started=1
 	if ! git -c user.name="$author_name" -c user.email="$author_email" \
 		merge --no-ff --no-edit -m "chore: merge upstream ${tag}" "$tag_commit"; then
 		conflicts="$(git diff --name-only --diff-filter=U)"
@@ -316,8 +343,6 @@ pr_url="$(gh pr create --repo "$repo" --base "$base" --head "$branch" \
 	--title "chore: merge upstream ${tag}" \
 	--body "Merges upstream release [${tag}](https://github.com/${upstream_repo}/releases/tag/${tag}) into ${base}." \
 	--assignee "$assignee")"
-pr_number="${pr_url##*/}"
-gh pr merge "$pr_number" --repo "$repo" --auto --merge \
-	--subject "chore: merge upstream ${tag} (#${pr_number})" --body ""
+enable_auto_merge "$pr_url"
 summary "Opened ${pr_url} with auto-merge (merge commit) enabled."
 finish
