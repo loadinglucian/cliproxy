@@ -1,0 +1,84 @@
+# Builds and tests every PR to main and every push to main. The job names
+# build-and-test and plugins are required checks in the main ruleset; rename them
+# only together with the ruleset. Commands live in scripts/fork/build.sh so
+# fork-sync runs the same checks before it pushes a sync branch.
+name: fork-ci
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build-and-test:
+    name: build-and-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e # v5.2.3
+        with:
+          version: 2026.10.18
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-build-and-test-${{ runner.os }}-${{ hashFiles('mise.lock', 'go.sum') }}
+          restore-keys: go-build-and-test-${{ runner.os }}-
+      - name: Build server (CGO)
+        run: scripts/fork/build.sh server
+      - name: Test
+        run: scripts/fork/build.sh test
+
+  plugins:
+    name: plugins
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e # v5.2.3
+        with:
+          version: 2026.10.18
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-plugins-${{ runner.os }}-${{ hashFiles('mise.lock', 'go.sum', 'plugins/*/go.sum') }}
+          restore-keys: go-plugins-${{ runner.os }}-
+      # Builds each plugins/<name>/ as a c-shared library; passes as a no-op while
+      # plugins/ does not exist.
+      - name: Build plugins (c-shared)
+        run: scripts/fork/build.sh plugins
+
+  # A sync merge can add a new upstream workflow. Disabling it right after the merge
+  # lands on main keeps it from running on later pushes; fork-sync repeats this.
+  disable-foreign-workflows:
+    name: disable-foreign-workflows
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Disable non-fork workflows
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/fork/disable-foreign-workflows.sh
