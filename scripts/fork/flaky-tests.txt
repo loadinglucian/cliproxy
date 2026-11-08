@@ -1,0 +1,29 @@
+# Upstream tests quarantined by `scripts/fork/build.sh test`. The main go test run
+# skips each test listed here; then each runs alone, up to 3 attempts, and fails the
+# job only when every attempt fails. See "Flaky test quarantine" in FORK.md.
+#
+# One entry per line: ./<package-dir> <TestName>. Put a comment above each entry
+# with why it flakes and the date it was first seen.
+
+# A websocket handler keeps writing a request log under auth/logs after the test
+# returns, so t.TempDir cleanup fails with "directory not empty". First seen 2026-11-08.
+./internal/api TestServerResponsesWebsocketReauthorizesEachTurn
+
+# Checks the executor's canceled flag right after response.incomplete arrives, but the
+# executor goroutine sets it asynchronously: "http upstream was not canceled".
+# First seen 2026-11-08.
+./sdk/api/handlers/openai TestResponsesInterruptStopsHTTPUpstream
+
+# Waits on the background credits refresh only when it is already registered, so the
+# hint assertion can run before the refresh stores it. First seen 2026-11-08.
+./internal/runtime/executor TestAntigravityManagerExecuteAndStream_ToppedUpCreditsRecoverDuringQuotaCooldown
+
+# Codex token refresh tests count mock OAuth calls through a CONNECT proxy; on
+# GitHub's runners they intermittently see a transport error or a missing outer
+# refresh. Not reproducible locally. First seen 2026-11-08.
+./internal/runtime/executor TestCodexExecutorRefreshSelectiveAndDual
+./internal/runtime/executor TestCodexExecutorRefreshSerializesUnderFileLockAndSkipsAlreadyRotatedToken
+
+# Waits a fixed 1s for the replacement Home subscription, but the reconnect uses a
+# jittered backoff of about 0.5 to 1s on top of failure detection. First seen 2026-11-08.
+./sdk/cliproxy TestServiceHeartbeatFailoverDoesNotDrainBlockingScope
