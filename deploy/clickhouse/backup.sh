@@ -10,7 +10,8 @@
 #    repository is verified, and the local copy is deleted.
 #
 # install.sh installs this as ~/.local/bin/cliproxy-log-backup, run nightly by
-# cliproxy-log-backup.timer. Run it by hand the same way.
+# cliproxy-log-backup.timer. Run it by hand the same way. With --check-docker it
+# only checks that it can reach Docker (install.sh uses this) and exits.
 #
 # Environment overrides (defaults in brackets):
 #   CLIPROXY_LOG_CONFIG_DIR         passwords [~/.config/cliproxy-log]
@@ -34,6 +35,25 @@ staging="$data_dir/backups/$backup_name"
 tag=cliproxy-log
 
 log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$*"; }
+
+# The timer runs under the systemd user manager, which keeps the groups it started
+# with. With lingering it is never restarted, so a later `usermod -aG docker` does
+# not reach it short of a reboot. When the Docker socket's group lists this user but
+# this process lacks it, rerun through sg, which grants a listed member that group
+# without a password. Docker reached any other way is used as is.
+socket=/var/run/docker.sock
+if [ -z "${DOCKER_HOST:-}" ] && [ -z "${CLIPROXY_LOG_SG:-}" ] && [ -S "$socket" ] && ! docker info >/dev/null 2>&1; then
+  group="$(stat -c %G "$socket")"
+  if ! id -nG | tr ' ' '\n' | grep -qx "$group" && id -nG "$(id -un)" | tr ' ' '\n' | grep -qx "$group"; then
+    log "rerunning through sg $group to reach Docker"
+    CLIPROXY_LOG_SG=1 exec sg "$group" -c "$(printf '%q ' "$0" "$@")"
+  fi
+fi
+if [ "${1:-}" = --check-docker ]; then
+  docker info >/dev/null 2>&1 || { log "cannot reach Docker"; exit 1; }
+  log "Docker is reachable"
+  exit 0
+fi
 
 # Never inherit restic settings from the caller; everything is passed explicitly.
 unset RESTIC_REPOSITORY RESTIC_PASSWORD RESTIC_PASSWORD_COMMAND

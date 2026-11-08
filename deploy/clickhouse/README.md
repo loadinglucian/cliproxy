@@ -19,7 +19,7 @@ Prerequisites on ThinkPad (one time, needs sudo):
 
 ```sh
 sudo systemctl enable --now docker
-sudo usermod -aG docker "$USER"     # then reboot, so the backup timer gets the group too
+sudo usermod -aG docker "$USER"     # then open a new SSH session or log in again
 sudo pacman -S --needed restic
 ```
 
@@ -157,7 +157,7 @@ Run it as `cliproxy_admin` (see Restore for the command).
 3. `restic forget --prune` keeping 7 daily, 4 weekly, and 6 monthly snapshots, then `restic check` on a 5% sample.
 4. Deletes the local copy (also when a step fails).
 
-The staging copy needs free space equal to the database size during the run. Logs: `journalctl --user -u cliproxy-log-backup`. Run one now: `systemctl --user start cliproxy-log-backup` (or `cliproxy-log-backup` in a terminal).
+The timer's systemd user manager keeps the groups it had when it started, so right after `usermod -aG docker` it lacks the docker group; the script then reruns itself through `sg docker`, so no reboot is needed. The staging copy needs free space equal to the database size during the run. Logs: `journalctl --user -u cliproxy-log-backup`. Run one now: `systemctl --user start cliproxy-log-backup` (or `cliproxy-log-backup` in a terminal).
 
 Settings can be overridden with environment variables documented at the top of `backup.sh`, for example `CLIPROXY_LOG_RESTIC_REPOSITORY` for a different target.
 

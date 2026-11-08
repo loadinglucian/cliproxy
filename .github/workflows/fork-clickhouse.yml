@@ -55,6 +55,23 @@ jobs:
       - name: Smoke test, backup, and restore
         run: deploy/clickhouse/test/smoke.sh --with-backup
 
+      # The backup timer's systemd user manager can predate the user's docker group
+      # membership. Move the socket to a group this job's processes lack, list the
+      # runner in it, and check the backup reaches Docker through sg only then.
+      - name: Backup from a session without the socket group
+        run: |
+          backup="$HOME/.local/bin/cliproxy-log-backup"
+          out="$("$backup" --check-docker)"
+          if grep -q 'through sg' <<<"$out"; then echo "used sg although Docker was reachable"; exit 1; fi
+          sudo groupadd cliproxy-sock
+          sudo gpasswd -a "$USER" cliproxy-sock
+          sudo chgrp cliproxy-sock /var/run/docker.sock
+          if docker info >/dev/null 2>&1; then echo "Docker still reachable without the socket group"; exit 1; fi
+          out="$(CLIPROXY_LOG_RESTIC_REPOSITORY="$(mktemp -d)/restic" "$backup" 2>&1)" || { echo "$out"; exit 1; }
+          echo "$out"
+          grep -q 'rerunning through sg cliproxy-sock' <<<"$out"
+          grep -q ' done$' <<<"$out"
+
       - name: Server log
         if: failure()
-        run: docker logs --tail 200 cliproxy-clickhouse
+        run: sudo docker logs --tail 200 cliproxy-clickhouse

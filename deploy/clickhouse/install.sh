@@ -206,11 +206,10 @@ if [ "$install_timer" = 1 ]; then
     "${config_dir//%/%%}" "${data_dir//%/%%}" >"$unit_dir/cliproxy-log-backup.service.d/paths.conf"
   systemctl --user daemon-reload
   systemctl --user enable --now cliproxy-log-backup.timer
-  # The timer runs under the systemd user manager, which keeps the groups it started
-  # with. With lingering it outlives logouts, so a new docker group membership only
-  # reaches it after a reboot.
-  if ! systemd-run --user --wait --quiet --collect docker info >/dev/null 2>&1; then
-    echo "warning: the backup timer cannot reach Docker; reboot (or run 'sudo systemctl restart user@$(id -u).service') so it picks up the docker group" >&2
+  # Check Docker access from where the timer runs: the systemd user manager, whose
+  # groups can predate a new docker group membership (backup.sh then uses sg).
+  if ! systemd-run --user --wait --quiet --collect "$HOME/.local/bin/cliproxy-log-backup" --check-docker >/dev/null 2>&1; then
+    echo "warning: the backup timer cannot reach Docker; check that $(id -un) is in the socket's group (sudo usermod -aG docker $(id -un)) and see 'journalctl --user -n 20'" >&2
   fi
 fi
 command -v restic >/dev/null || echo "warning: restic is not installed; install it (sudo pacman -S --needed restic) before the first backup" >&2
