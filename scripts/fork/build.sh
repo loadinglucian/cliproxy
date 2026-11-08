@@ -133,9 +133,10 @@ run_quarantined() {
 		if [[ -z "$result" ]]; then
 			result="failed all $quarantine_attempts attempts"
 			failed=$((failed + 1))
+			retried="${retried:+$retried, }\`$name\` (failed)"
 		elif [[ "$attempt" -gt 1 ]]; then
 			result="passed on attempt $attempt/$quarantine_attempts"
-			retried="$retried \`$name\`"
+			retried="${retried:+$retried, }\`$name\`"
 		fi
 		log "quarantined $pkg $name: $result"
 		rows="$rows| \`$name\` | \`$pkg\` | $result |"$'\n'
@@ -145,7 +146,7 @@ run_quarantined() {
 		{
 			printf '### Quarantined tests (%s)\n\n' "$flaky_list"
 			printf '| Test | Package | Result |\n| --- | --- | --- |\n%s\n' "$rows"
-			printf 'Needed a retry:%s\n' "${retried:- none}"
+			printf 'Needed a retry: %s\n' "${retried:-none}"
 		} >>"$GITHUB_STEP_SUMMARY"
 	fi
 	if [[ "$failed" -gt 0 ]]; then

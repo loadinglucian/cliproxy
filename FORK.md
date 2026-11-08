@@ -46,7 +46,7 @@ Some upstream tests fail intermittently, usually from a race inside the test its
 2. Each listed test then runs on its own (`go test -count=1 -cpu 1 -run '^<TestName>$' <package>`), up to 3 attempts. It fails the job only when all 3 attempts fail; a failed attempt prints its output. `-cpu 1` (GOMAXPROCS=1) serializes goroutines, which removes most of the races these tests have inside themselves: one failed 3 of 3 default attempts on a GitHub runner and none of 400 at `-cpu 1`.
 3. In GitHub Actions the step summary shows a table of the quarantined tests and which needed a retry.
 
-`-skip` matches by test name in every package, so a test elsewhere that shares a quarantined name runs once more on its own, without retries. A listed test that no longer exists upstream prints a warning (and a step summary line) and is ignored; it never fails the job. A malformed line in the list fails the job.
+`-skip` matches by test name in every package, so a test elsewhere that shares a quarantined name runs once more on its own, without retries. A listed test that no longer exists upstream prints a warning (and a step summary line) and is ignored; it never fails the job. The existence check is a text search, so a test upstream moves into a file that does not build on Linux (such as `*_windows_test.go`) passes in CI without running; remove its entry. A malformed line in the list fails the job.
 
 Each entry is one line, `./<package-dir> <TestName>`, under a comment giving why it flakes and the date it was first seen:
 
