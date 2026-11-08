@@ -27,3 +27,10 @@
 # Waits a fixed 1s for the replacement Home subscription, but the reconnect uses a
 # jittered backoff of about 0.5 to 1s on top of failure detection. First seen 2026-11-08.
 ./sdk/cliproxy TestServiceHeartbeatFailoverDoesNotDrainBlockingScope
+
+# Its hook blocks whichever model registration starts second, assuming that is auth
+# B, but the batch registers A and B on concurrent workers; when A starts second the
+# test times out after 2s. The stuck registration then also fails
+# TestEndToEndAuthFile{Replacement,Patch}_RestoresModelsInV1ModelsWithoutRestart in
+# the same run. First seen 2026-11-09.
+./sdk/cliproxy TestHandleAuthUpdates_SameRevisionWaitDoesNotWaitForOtherAuthInBatch
