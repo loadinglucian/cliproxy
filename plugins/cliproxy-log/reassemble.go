@@ -120,6 +120,7 @@ func reassembleAnthropic(events [][]byte, errs *captureErrs) ([]byte, bool) {
 	var errorEvent []byte
 	blocks := make(map[int]map[string]any)
 	partial := make(map[int]*strings.Builder)
+	texts := make(textDeltas)
 	for _, raw := range events {
 		var ev anthropicEvent
 		if errDecode := decodeUseNumber(raw, &ev); errDecode != nil {
@@ -149,7 +150,7 @@ func reassembleAnthropic(events [][]byte, errs *captureErrs) ([]byte, bool) {
 				errs.add("content_block_delta for unknown block")
 				continue
 			}
-			applyAnthropicDelta(block, *ev.Index, ev.Delta, partial, errs)
+			applyAnthropicDelta(block, *ev.Index, ev.Delta, partial, texts, errs)
 		case "content_block_stop":
 			if ev.Index == nil {
 				errs.add("content_block_stop without index")
@@ -195,6 +196,7 @@ func reassembleAnthropic(events [][]byte, errs *captureErrs) ([]byte, bool) {
 		errs.add("stream had no message_start event")
 		return nil, false
 	}
+	texts.apply(blocks)
 	indexes := make([]int, 0, len(blocks))
 	for index := range blocks {
 		indexes = append(indexes, index)
@@ -213,15 +215,46 @@ func reassembleAnthropic(events [][]byte, errs *captureErrs) ([]byte, bool) {
 	return body, true
 }
 
-func applyAnthropicDelta(block map[string]any, index int, delta map[string]any, partial map[int]*strings.Builder, errs *captureErrs) {
+// textDeltas accumulates text, thinking, and signature deltas per block index and
+// field, so a long block is copied once at the end instead of once per delta.
+type textDeltas map[int]map[string]*strings.Builder
+
+func (t textDeltas) add(index int, field, s string) {
+	fields := t[index]
+	if fields == nil {
+		fields = make(map[string]*strings.Builder, 1)
+		t[index] = fields
+	}
+	b := fields[field]
+	if b == nil {
+		b = &strings.Builder{}
+		fields[field] = b
+	}
+	b.WriteString(s)
+}
+
+// apply appends each accumulated field to the text its content_block_start carried.
+func (t textDeltas) apply(blocks map[int]map[string]any) {
+	for index, fields := range t {
+		block := blocks[index]
+		if block == nil {
+			continue
+		}
+		for field, b := range fields {
+			block[field] = stringField(block, field) + b.String()
+		}
+	}
+}
+
+func applyAnthropicDelta(block map[string]any, index int, delta map[string]any, partial map[int]*strings.Builder, texts textDeltas, errs *captureErrs) {
 	deltaType, _ := delta["type"].(string)
 	switch deltaType {
 	case "text_delta":
-		block["text"] = stringField(block, "text") + stringField(delta, "text")
+		texts.add(index, "text", stringField(delta, "text"))
 	case "thinking_delta":
-		block["thinking"] = stringField(block, "thinking") + stringField(delta, "thinking")
+		texts.add(index, "thinking", stringField(delta, "thinking"))
 	case "signature_delta":
-		block["signature"] = stringField(block, "signature") + stringField(delta, "signature")
+		texts.add(index, "signature", stringField(delta, "signature"))
 	case "input_json_delta":
 		b := partial[index]
 		if b == nil {

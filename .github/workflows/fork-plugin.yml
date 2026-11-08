@@ -38,7 +38,7 @@ jobs:
     timeout-minutes: 30
     services:
       clickhouse:
-        image: clickhouse/clickhouse-server:26.8.34.13
+        image: clickhouse/clickhouse-server:26.8.34.13@sha256:8b28eb09479c36c4533eec7a6268917d04ba3a6fd90e3f4205f70e761b6d7779
         env:
           # Default user without a password, reachable over the network; test only.
           CLICKHOUSE_SKIP_USER_SETUP: "1"

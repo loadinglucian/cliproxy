@@ -68,6 +68,25 @@ func TestReassembleAnthropicStream(t *testing.T) {
 	}
 }
 
+func TestReassembleAnthropicKeepsStartTextBeforeDeltas(t *testing.T) {
+	stream := strings.Join([]string{
+		`data: {"type":"message_start","message":{"id":"m","content":[]}}`,
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":"Hel"}}`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"lo, "}}`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"world"}}`,
+		`data: {"type":"content_block_stop","index":0}`,
+	}, "\n\n")
+	var errs captureErrs
+	body, kind := reassembleStream([]byte(stream), &errs)
+	var msg anthropicMessage
+	if kind != kindJSON || json.Unmarshal(body, &msg) != nil || len(msg.Content) != 1 {
+		t.Fatalf("kind %q body %s errors %v", kind, body, errs.list)
+	}
+	if msg.Content[0].Text != "Hello, world" {
+		t.Fatalf("text = %q", msg.Content[0].Text)
+	}
+}
+
 func TestReassembleAnthropicTruncatedStream(t *testing.T) {
 	raw := readFixture(t, "anthropic_stream.sse")
 	cut := bytes.Index(raw, []byte("ncisco, CA"))

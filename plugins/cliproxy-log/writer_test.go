@@ -230,6 +230,65 @@ func TestWriterStopFlushes(t *testing.T) {
 	}
 }
 
+// A shutdown that finds ClickHouse stalled must leave both the in-flight batch and
+// the rows buffered behind it in the spool, not lose them when the process exits.
+func TestWriterStopSpoolsWhenClickHouseStalls(t *testing.T) {
+	received := make(chan struct{}, 1)
+	release := make(chan struct{})
+	ch := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case received <- struct{}{}:
+		default:
+		}
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	defer ch.Close()
+	defer close(release)
+	h := newWriterHarness(t, ch.URL)
+	h.cfg.FlushRows = 1
+	spooledBefore := stats.rowsSpooled.Load()
+	h.w.start()
+	h.w.add([]byte(`{"request_id":"in-flight"}`))
+	<-received
+	h.w.add([]byte(`{"request_id":"buffered"}`))
+	h.w.stop(10 * time.Millisecond)
+	select {
+	case <-h.w.done:
+	default:
+		t.Fatal("writer goroutine still running after stop")
+	}
+	if got := stats.rowsSpooled.Load() - spooledBefore; got != 2 {
+		t.Fatalf("spooled rows = %d, want 2; files %v", got, spoolFiles(t, h.cfg.SpoolDir))
+	}
+}
+
+// An HTTP 200 whose reply is cut off is not an acknowledgement: the batch is
+// spooled for retry instead of being counted as written.
+func TestWriterSpoolsWhenAcknowledgementIsCut(t *testing.T) {
+	ch := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		conn, buf, errHijack := w.(http.Hijacker).Hijack()
+		if errHijack != nil {
+			t.Errorf("hijack: %v", errHijack)
+			return
+		}
+		_, _ = buf.WriteString("HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nOk.")
+		_ = buf.Flush()
+		_ = conn.Close()
+	}))
+	defer ch.Close()
+	h := newWriterHarness(t, ch.URL)
+	writtenBefore, spooledBefore := stats.rowsWritten.Load(), stats.rowsSpooled.Load()
+	h.w.add([]byte(`{"request_id":"a"}`))
+	h.w.cycle(true)
+	if stats.rowsWritten.Load() != writtenBefore || stats.rowsSpooled.Load() != spooledBefore+1 || h.w.healthy {
+		t.Fatalf("cut acknowledgement counted as written")
+	}
+}
+
 func TestSpoolRowCount(t *testing.T) {
 	if spoolRowCount("00000000000000000001-000001-42"+spoolSuffix) != 42 || spoolRowCount("junk") != 0 {
 		t.Fatal("spool row count parse wrong")

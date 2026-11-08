@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -23,6 +24,9 @@ const (
 	maxBackoff        = time.Minute
 	sendTimeout       = time.Minute
 	replayFilesPerRun = 20
+	// stopSpoolTimeout bounds the local spool writes that follow a canceled
+	// shutdown insert.
+	stopSpoolTimeout = 5 * time.Second
 )
 
 // errRejected marks a batch ClickHouse refused as malformed (HTTP 400). Retrying
@@ -36,6 +40,9 @@ type writer struct {
 	cfg    func() *pluginConfig
 	now    func() time.Time
 	client *http.Client
+	// ctx scopes every insert; stop cancels it when ClickHouse stalls shutdown.
+	ctx    context.Context
+	cancel context.CancelFunc
 
 	mu        sync.Mutex
 	rows      [][]byte
@@ -58,10 +65,13 @@ type writer struct {
 }
 
 func newWriter(cfg func() *pluginConfig, now func() time.Time) *writer {
+	ctx, cancel := context.WithCancel(context.Background())
 	return &writer{
 		cfg:     cfg,
 		now:     now,
 		client:  &http.Client{Timeout: sendTimeout},
+		ctx:     ctx,
+		cancel:  cancel,
 		kick:    make(chan struct{}, 1),
 		stopCh:  make(chan struct{}),
 		done:    make(chan struct{}),
@@ -103,12 +113,22 @@ func (w *writer) reconfigure() {
 }
 
 // stop flushes buffered rows once more (spooling them if ClickHouse is down) and
-// waits at most timeout for the writer goroutine.
+// waits at most timeout for the writer goroutine. If ClickHouse has not answered by
+// then, it cancels the in-flight insert so that batch and the buffered rows go to
+// the spool instead of being lost when the process exits, and waits at most
+// stopSpoolTimeout more for those local writes.
 func (w *writer) stop(timeout time.Duration) {
+	defer w.cancel()
 	close(w.stopCh)
 	select {
 	case <-w.done:
+		return
 	case <-time.After(timeout):
+	}
+	w.cancel()
+	select {
+	case <-w.done:
+	case <-time.After(stopSpoolTimeout):
 	}
 }
 
@@ -208,7 +228,7 @@ func (w *writer) send(body []byte) error {
 		"query":                  {query},
 		"date_time_input_format": {"best_effort"},
 	}.Encode()
-	req, errReq := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
+	req, errReq := http.NewRequestWithContext(w.ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if errReq != nil {
 		return fmt.Errorf("build insert request: %w", errReq)
 	}
@@ -228,9 +248,20 @@ func (w *writer) send(body []byte) error {
 	if errDo != nil {
 		return fmt.Errorf("clickhouse insert: %w", errDo)
 	}
-	defer func() { _ = resp.Body.Close() }()
-	snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	_, _ = io.Copy(io.Discard, resp.Body)
+	defer func() {
+		if errClose := resp.Body.Close(); errClose != nil {
+			logWarn("cliproxy-log: closing ClickHouse response failed", map[string]any{"error": errClose.Error()})
+		}
+	}()
+	// An unread or cut-off reply is not an acknowledgement: the batch is retried
+	// (possibly duplicated) rather than counted as written and lost.
+	snippet, errRead := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if errRead == nil {
+		_, errRead = io.Copy(io.Discard, resp.Body)
+	}
+	if errRead != nil {
+		return fmt.Errorf("clickhouse insert status %d: read response: %w", resp.StatusCode, errRead)
+	}
 	if resp.StatusCode == http.StatusOK {
 		return nil
 	}

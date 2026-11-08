@@ -132,7 +132,8 @@ Logging never blocks or fails a request:
 - A writer goroutine sends batches every 2 s or at 500 rows (or 16 MiB) as gzip `INSERT INTO cliproxy_log.requests FORMAT JSONEachRow` over HTTP.
 - When an insert fails, the batch is written to `spool-dir` as a gzip file and the writer backs off (1 s doubling to 60 s). During backoff new batches go straight to the spool. After the backoff the oldest spool file is the health probe; once it succeeds, the spool is replayed oldest first, 20 files per cycle. Spool files survive restarts.
 - Past `spool-max-bytes`, batches are dropped and counted (`rows_dropped`). An HTTP 400 from ClickHouse means the batch itself is malformed, so it is dropped and counted (`rows_rejected`) instead of retried forever.
-- On shutdown the plugin writes every in-flight request (incomplete ones as `abandoned`) and makes one last insert attempt, spooling on failure, within 10 s.
+- On shutdown the plugin writes every in-flight request (incomplete ones as `abandoned`) and makes one last insert attempt, spooling on failure. If ClickHouse has not answered within 10 s, the pending insert is canceled and its rows go to the spool too.
+- An insert counts as written only when ClickHouse answers HTTP 200 and the reply is read in full; a cut-off reply is retried from the spool, which can duplicate that batch.
 - Once a minute, if anything changed, the host log gets `cliproxy-log stats` with `rows_written`, `rows_spooled`, `rows_dropped`, `rows_rejected`, `events_dropped`, `capture_errors`, `abandoned`, `panics`, and `spool_bytes` (warn level when anything was lost).
 
 ## Reload or restart
@@ -165,7 +166,7 @@ Unit tests cover correlation (including late usage, retries, and shared WebSocke
 The end-to-end test builds the proxy and the plugin, starts the proxy with a fake Claude and Codex upstream, sends non-streaming, streaming, `count_tokens`, model-list, and WebSocket requests, and checks the rows in a real ClickHouse:
 
 ```bash
-docker run -d --rm -p 127.0.0.1:18123:8123 -e CLICKHOUSE_SKIP_USER_SETUP=1 clickhouse/clickhouse-server:26.8.34.13
+docker run -d --rm -p 127.0.0.1:18123:8123 -e CLICKHOUSE_SKIP_USER_SETUP=1 clickhouse/clickhouse-server:26.8.34.13@sha256:8b28eb09479c36c4533eec7a6268917d04ba3a6fd90e3f4205f70e761b6d7779
 CLIPROXY_LOG_E2E_CLICKHOUSE_URL=http://127.0.0.1:18123 mise exec -- go test -tags e2e -v ./plugins/cliproxy-log/e2e
 ```
 
