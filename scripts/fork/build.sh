@@ -9,6 +9,8 @@
 #   test              Run go test ./... for the root module.
 #   plugins [outdir]  Test and build every plugins/*/ directory as a c-shared
 #                     library (default outdir: bin/plugins). No-op without plugins/.
+#                     Sets main.proxyVersion from VERSION (no-op if undefined).
+#                     Plugins inside the root module are covered by `test`.
 #   all               server, test, then plugins, with default outputs.
 #
 # Run Go through mise (an activated shell or `mise exec -- scripts/fork/build.sh all`)
@@ -86,7 +88,9 @@ build_plugins() {
 			log "building plugin $name -> $outdir/$name.$ext"
 			CGO_ENABLED=1 GOAMD64="${GOAMD64:-v1}" GOARM64="${GOARM64:-v8.0}" \
 				CGO_CFLAGS="${cflags}${CGO_CFLAGS:+ $CGO_CFLAGS}" \
-				go build -buildvcs=false -buildmode=c-shared -o "$outdir/$name.$ext" .
+				go build -buildvcs=false -buildmode=c-shared \
+				-ldflags="-s -w -X main.proxyVersion=${VERSION:-dev}" \
+				-o "$outdir/$name.$ext" .
 			rm -f "$outdir/$name.h"
 		)
 	done
@@ -107,7 +111,7 @@ all)
 	build_plugins
 	;;
 *)
-	sed -n '2,15p' "$0" >&2
+	sed -n '2,17p' "$0" >&2
 	exit 2
 	;;
 esac
