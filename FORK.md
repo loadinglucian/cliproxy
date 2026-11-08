@@ -43,7 +43,7 @@ CI pins mise 2026.10.18, which only reads `mise.lock` format version 3; newer mi
 Some upstream tests fail intermittently, usually from a race inside the test itself. Fixing them would mean editing upstream files, so `scripts/fork/build.sh test` quarantines them instead:
 
 1. The main `go test ./...` run skips every test listed in `scripts/fork/flaky-tests.txt` (`go test -skip`).
-2. Each listed test then runs on its own (`go test -count=1 -run '^<TestName>$' <package>`), up to 3 attempts. It fails the job only when all 3 attempts fail; a failed attempt prints its output.
+2. Each listed test then runs on its own (`go test -count=1 -cpu 1 -run '^<TestName>$' <package>`), up to 3 attempts. It fails the job only when all 3 attempts fail; a failed attempt prints its output. `-cpu 1` (GOMAXPROCS=1) serializes goroutines, which removes most of the races these tests have inside themselves: one failed 3 of 3 default attempts on a GitHub runner and none of 400 at `-cpu 1`.
 3. In GitHub Actions the step summary shows a table of the quarantined tests and which needed a retry.
 
 `-skip` matches by test name in every package, so a test elsewhere that shares a quarantined name runs once more on its own, without retries. A listed test that no longer exists upstream prints a warning (and a step summary line) and is ignored; it never fails the job. A malformed line in the list fails the job.
@@ -57,7 +57,7 @@ Each entry is one line, `./<package-dir> <TestName>`, under a comment giving why
 
 To add an entry, first confirm the test is flaky rather than broken: it passes most runs of `mise exec -- go test -count=200 -run '^<TestName>$' ./<package-dir>` (add `-race` for suspected data races), and its failure comes from the test's timing or cleanup, not from a regression. A test that fails every iteration after the first under `-count` leaks process-global state; that is not flakiness, since CI runs each test once. Note the root cause in the comment. Entries name top-level tests; to quarantine a flaky subtest, list its parent.
 
-To remove an entry, delete its line and comment when the test no longer exists (the warning above), or when it passes 50 runs in a row after an upstream change: `mise exec -- go test -count=50 -run '^<TestName>$' ./<package-dir>`.
+To remove an entry, delete its line and comment when the test no longer exists (the warning above), or when it passes 50 runs in a row after an upstream change, at the default GOMAXPROCS: `mise exec -- go test -count=50 -run '^<TestName>$' ./<package-dir>`.
 
 ## Upstream sync
 

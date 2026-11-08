@@ -112,7 +112,9 @@ run_name_collisions() {
 
 # run_quarantined runs each quarantined test alone, up to quarantine_attempts
 # times, and fails only when a test fails every attempt. Failed attempts print
-# their output; the step summary lists which tests needed a retry.
+# their output; the step summary lists which tests needed a retry. Attempts use
+# GOMAXPROCS=1 (-cpu 1) because most of these tests race their own goroutines;
+# one failed 3 of 3 default attempts on a GitHub runner and 0 of 400 at -cpu 1.
 run_quarantined() {
 	local i pkg name attempt out result rows="" retried="" failed=0
 	out="$(mktemp)"
@@ -121,7 +123,7 @@ run_quarantined() {
 		name="${q_names[$i]}"
 		result=""
 		for ((attempt = 1; attempt <= quarantine_attempts; attempt++)); do
-			if go test -count=1 -run "^${name}\$" "$pkg" >"$out" 2>&1; then
+			if go test -count=1 -cpu 1 -run "^${name}\$" "$pkg" >"$out" 2>&1; then
 				result="passed"
 				break
 			fi
