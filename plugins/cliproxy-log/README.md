@@ -63,7 +63,7 @@ plugins:
       clickhouse-url: "http://127.0.0.1:8123"
       clickhouse-database: "cliproxy_log"
       clickhouse-user: "cliproxy_writer"
-      clickhouse-password-file: "/home/loadinglucian/.config/cliproxyapi/clickhouse-writer.password"
+      clickhouse-password-file: "/home/loadinglucian/.config/cliproxy-log/writer-password"
       spool-dir: "/home/loadinglucian/.local/state/cliproxy-log/spool"
       spool-max-bytes: 5368709120
       max-body-bytes: 33554432

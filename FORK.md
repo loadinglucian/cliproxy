@@ -10,7 +10,7 @@ Upstream releases land almost daily, and every one is merged into `main`. To kee
 | --- | --- |
 | `FORK.md` | This document |
 | `mise.toml`, `mise.lock` | Go toolchain pin, matching the `go` directive in `go.mod` |
-| `scripts/fork/` | `build.sh` (build, test, plugins), `sync.sh` (upstream merge), `disable-foreign-workflows.sh` |
+| `scripts/fork/` | `build.sh` (build, test, plugins), `flaky-tests.txt` (quarantined upstream tests), `sync.sh` (upstream merge), `disable-foreign-workflows.sh` |
 | `.github/workflows/fork-*.yml` | Every workflow this repository runs |
 | `plugins/<name>/` | Dynamic-library plugins built with upstream's plugin ABI, for example `plugins/cliproxy-log/` |
 | `deploy/clickhouse/` | ClickHouse deployment for the request log |
@@ -36,7 +36,28 @@ CI pins mise 2026.10.18, which only reads `mise.lock` format version 3; newer mi
 
 `fork-ci` runs on every PR to `main` and every push to `main`. Its jobs `build-and-test` and `plugins` are required checks in the `main` ruleset, which also requires a pull request for every change. Merge commits and squash merges are allowed; rebase merges are off.
 
-`build-and-test` runs the full upstream `go test ./...` (about 2 minutes on a runner) and retries failing packages once, because a few upstream tests, such as the Codex token refresh tests in `internal/runtime/executor`, fail intermittently on GitHub's runners. A package that fails twice fails the job.
+`build-and-test` runs the full upstream `go test ./...` (about 2 minutes on a runner) with the quarantined flaky tests split out, as described below. Any other failing test fails the job on its first run, with no retry.
+
+### Flaky test quarantine
+
+Some upstream tests fail intermittently, usually from a race inside the test itself. Fixing them would mean editing upstream files, so `scripts/fork/build.sh test` quarantines them instead:
+
+1. The main `go test ./...` run skips every test listed in `scripts/fork/flaky-tests.txt` (`go test -skip`).
+2. Each listed test then runs on its own (`go test -count=1 -cpu 1 -run '^<TestName>$' <package>`), up to 3 attempts. It fails the job only when all 3 attempts fail; a failed attempt prints its output. `-cpu 1` (GOMAXPROCS=1) serializes goroutines, which removes most of the races these tests have inside themselves: one failed 3 of 3 default attempts on a GitHub runner and none of 400 at `-cpu 1`.
+3. In GitHub Actions the step summary shows a table of the quarantined tests and which needed a retry.
+
+`-skip` matches by test name in every package, so a test elsewhere that shares a quarantined name runs once more on its own, without retries. A listed test that no longer exists upstream prints a warning (and a step summary line) and is ignored; it never fails the job. The existence check is a text search, so a test upstream moves into a file that does not build on Linux (such as `*_windows_test.go`) passes in CI without running; remove its entry. A malformed line in the list fails the job.
+
+Each entry is one line, `./<package-dir> <TestName>`, under a comment giving why it flakes and the date it was first seen:
+
+```text
+# Waits a fixed 1s for a reconnect that uses a jittered 0.5 to 1s backoff. First seen 2026-11-08.
+./sdk/cliproxy TestServiceHeartbeatFailoverDoesNotDrainBlockingScope
+```
+
+To add an entry, first confirm the test is flaky rather than broken: it passes most runs of `mise exec -- go test -count=200 -run '^<TestName>$' ./<package-dir>` (add `-race` for suspected data races), and its failure comes from the test's timing or cleanup, not from a regression. A test that fails every iteration after the first under `-count` leaks process-global state; that is not flakiness, since CI runs each test once. Note the root cause in the comment. Entries name top-level tests; to quarantine a flaky subtest, list its parent.
+
+To remove an entry, delete its line and comment when the test no longer exists (the warning above), or when it passes 50 runs in a row after an upstream change, at the default GOMAXPROCS: `mise exec -- go test -count=50 -run '^<TestName>$' ./<package-dir>`.
 
 ## Upstream sync
 
