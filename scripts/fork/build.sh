@@ -34,9 +34,27 @@ build_server() {
 		-o "$out" ./cmd/server
 }
 
+# run_tests runs the full upstream suite and retries failing packages once. A few
+# upstream tests (for example the Codex token refresh tests in
+# internal/runtime/executor) fail intermittently on GitHub's runners while passing
+# locally; without the retry one flaky run would block a sync PR's auto-merge and
+# file an issue. A package that fails twice still fails the step.
 run_tests() {
+	local out failed
+	out="$(mktemp)"
 	log "running go test ./..."
-	go test ./...
+	if go test ./... 2>&1 | tee "$out"; then
+		rm -f "$out"
+		return 0
+	fi
+	failed="$(sed -n 's/^FAIL[[:space:]][[:space:]]*\([^[:space:]][^[:space:]]*\).*/\1/p' "$out" | sort -u)"
+	rm -f "$out"
+	if [[ -z "$failed" ]]; then
+		return 1
+	fi
+	log "retrying failed packages once: $(echo "$failed" | tr '\n' ' ')"
+	# shellcheck disable=SC2086 # one package path per word
+	go test -count=1 $failed
 }
 
 plugin_ext() {

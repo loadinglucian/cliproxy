@@ -36,6 +36,8 @@ CI pins mise 2026.10.18, which only reads `mise.lock` format version 3; newer mi
 
 `fork-ci` runs on every PR to `main` and every push to `main`. Its jobs `build-and-test` and `plugins` are required checks in the `main` ruleset, which also requires a pull request for every change. Merge commits and squash merges are allowed; rebase merges are off.
 
+`build-and-test` runs the full upstream `go test ./...` (about 2 minutes on a runner) and retries failing packages once, because a few upstream tests, such as the Codex token refresh tests in `internal/runtime/executor`, fail intermittently on GitHub's runners. A package that fails twice fails the job.
+
 ## Upstream sync
 
 `fork-sync` runs every 6 hours and on demand (Actions, fork-sync, Run workflow; optional upstream tag, optional dry run). It runs `scripts/fork/sync.sh`, which:
