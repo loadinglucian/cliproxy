@@ -93,7 +93,7 @@ plugin_version	LowCardinality(String)
 proxy_version	LowCardinality(String)
 EOF
 )"
-actual="$(ok reader "SELECT name, type FROM (DESCRIBE TABLE cliproxy_log.requests) FORMAT TSVRaw")"
+actual="$(ok reader "DESCRIBE TABLE cliproxy_log.requests FORMAT TSVRaw" | cut -f1,2)"
 [ "$actual" = "$expected" ] || fail "columns differ from the contract:$(diff <(echo "$expected") <(echo "$actual") || true)"
 pass "table matches the plugin contract"
 
