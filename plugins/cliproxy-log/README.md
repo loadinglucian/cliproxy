@@ -16,7 +16,7 @@ Per request it correlates these host callbacks by `RequestID`:
 2. `request.intercept_after`: the body after credential selection (`upstream_request`), the target format, and the served model. On retries the last attempt wins.
 3. `response.intercept_after` (non-streaming body) or `response.intercept_stream_chunk` (stream chunks), plus `websocket.response_event` when the upstream connection is a WebSocket.
 4. `usage.handle`: provider, account, credential, session, tokens. Usage records carry their own per-attempt ID, so they are matched by `TraceID` (the inbound HTTP request) instead; see [Known limits](#known-limits).
-5. `request.complete`: outcome, status, error, start and end times. The row is written when usage has arrived, or 5 s after completion without it.
+5. `request.complete`: outcome, status, error, start and end times. The row is written as soon as a successful usage record has arrived, otherwise 5 s after completion. A failed or canceled request waits the full 5 s, because its final attempt's usage can arrive after an earlier attempt's; the latest record wins.
 
 Requests that never complete (for example the proxy lost track of them) are written with outcome `abandoned` after 30 minutes of inactivity.
 

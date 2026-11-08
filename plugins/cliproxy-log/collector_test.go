@@ -501,6 +501,30 @@ func TestCollectorTruncatesBodies(t *testing.T) {
 	}
 }
 
+// A failed request must keep waiting after a failed attempt's usage: the final
+// attempt's record can arrive after request.complete and must win.
+func TestCollectorFailedRequestTakesFinalAttemptUsage(t *testing.T) {
+	h := newHarness(t)
+	h.request("r1", "t1", "/v1/messages", http.Header{}, `{}`)
+	first := usageRecord("t1", "claude-real", true)
+	first.AuthID = "first-credential.json"
+	first.Detail = pluginapi.UsageDetail{}
+	h.feed(pluginabi.MethodUsageHandle, first)
+	h.complete("r1", pluginapi.RequestCompletionFailed, 529)
+	if len(h.rows) != 0 {
+		t.Fatalf("an earlier attempt's failed usage settled a failed request")
+	}
+	final := usageRecord("t1", "claude-real", true)
+	final.AuthID = "final-credential.json"
+	final.Detail.OutputTokens = 13
+	h.feed(pluginabi.MethodUsageHandle, final)
+	h.advance(h.cfg.UsageGrace)
+	h.c.sweep(false)
+	if r := h.row(0); r.AuthID != "final-credential.json" || r.OutputTokens != 13 || r.Outcome != "failed" {
+		t.Fatalf("row kept the earlier attempt: auth %q tokens %d outcome %q", r.AuthID, r.OutputTokens, r.Outcome)
+	}
+}
+
 func TestCollectorKeepsSuccessfulUsageOverRetryFailure(t *testing.T) {
 	h := newHarness(t)
 	h.request("r1", "t1", "/v1/messages", http.Header{}, `{}`)
@@ -562,7 +586,7 @@ func TestCollectorSurvivesPanicsAndGarbage(t *testing.T) {
 	c.process(event{method: pluginabi.MethodRequestInterceptBefore, raw: []byte("not json")})
 	raw, _ := json.Marshal(pluginapi.RequestInterceptRequest{RequestID: "r1", TraceID: "t1"})
 	c.process(event{method: pluginabi.MethodRequestInterceptBefore, raw: raw})
-	usage, _ := json.Marshal(pluginapi.UsageRecord{TraceID: "t1", Failed: true})
+	usage, _ := json.Marshal(pluginapi.UsageRecord{TraceID: "t1"})
 	c.process(event{method: pluginabi.MethodUsageHandle, raw: usage})
 	done, _ := json.Marshal(pluginapi.RequestCompletion{RequestID: "r1", Outcome: pluginapi.RequestCompletionFailed})
 	c.process(event{method: pluginabi.MethodRequestComplete, raw: done})

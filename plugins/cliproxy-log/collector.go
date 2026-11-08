@@ -423,15 +423,12 @@ func (c *collector) sweep(all bool) {
 	}
 }
 
-// usageSettled reports whether waiting longer cannot improve the usage data: a
-// succeeded request has a successful record, or a failed one has any record.
-func usageSettled(e *entry) bool {
-	if e.usage == nil {
-		return false
-	}
-	succeeded := e.completion.Outcome == pluginapi.RequestCompletionSucceeded
-	return !succeeded || !e.usage.Failed
-}
+// usageSettled reports whether waiting longer cannot improve the usage data: the
+// request has a successful record. A failed record may come from an earlier attempt
+// while the final attempt's record is still queued (usage is dispatched
+// asynchronously), so failed and canceled requests wait out the usage grace, and a
+// later record replaces the earlier failed one.
+func usageSettled(e *entry) bool { return hasGoodUsage(e) }
 
 func (c *collector) remove(e *entry) {
 	delete(c.entries, e.id)
