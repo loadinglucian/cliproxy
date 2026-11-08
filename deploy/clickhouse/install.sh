@@ -112,7 +112,7 @@ users_file="$config_dir/users.d/cliproxy-users.xml"
 
 # --- 5. Server --------------------------------------------------------------------
 step "starting ClickHouse"
-docker compose -f "$here/docker-compose.yml" up -d --wait --remove-orphans
+docker compose -f "$here/docker-compose.yml" up -d --wait --quiet-pull --remove-orphans
 
 # Runs clickhouse-client inside the container as the admin. The password travels
 # through the environment, never the command line.
@@ -160,8 +160,8 @@ step "verifying users"
 expect_ok writer "SELECT count() FROM cliproxy_log.requests"
 grants="$(http_query writer "SHOW GRANTS")"
 case "$grants" in
-  *"GRANT INSERT, SELECT ON cliproxy_log.*"*) ;;
-  *) die "writer lacks INSERT, SELECT on cliproxy_log: $grants" ;;
+  *"GRANT SELECT, INSERT ON cliproxy_log.*"* | *"GRANT INSERT, SELECT ON cliproxy_log.*"*) ;;
+  *) die "writer lacks INSERT and SELECT on cliproxy_log: $grants" ;;
 esac
 expect_denied writer "DROP TABLE cliproxy_log.requests"
 expect_ok reader "SELECT count() FROM cliproxy_log.requests"
