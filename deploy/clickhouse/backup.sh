@@ -39,14 +39,17 @@ log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$*"; }
 # The timer runs under the systemd user manager, which keeps the groups it started
 # with. With lingering it is never restarted, so a later `usermod -aG docker` does
 # not reach it short of a reboot. When the Docker socket's group lists this user but
-# this process lacks it, rerun through sg, which grants a listed member that group
-# without a password. Docker reached any other way is used as is.
+# this process lacks it, rerun with that group through sg (shadow) or newgrp -c
+# (util-linux, Arch has no sg); both grant a listed member the group without a
+# password. Docker reached any other way is used as is.
 socket=/var/run/docker.sock
 if [ -z "${DOCKER_HOST:-}" ] && [ -z "${CLIPROXY_LOG_SG:-}" ] && [ -S "$socket" ] && ! docker info >/dev/null 2>&1; then
   group="$(stat -c %G "$socket")"
   if ! id -nG | tr ' ' '\n' | grep -qx "$group" && id -nG "$(id -un)" | tr ' ' '\n' | grep -qx "$group"; then
-    log "rerunning through sg $group to reach Docker"
-    CLIPROXY_LOG_SG=1 exec sg "$group" -c "$(printf '%q ' "$0" "$@")"
+    log "rerunning with group $group to reach Docker"
+    cmd="$(printf '%q ' "$0" "$@")"
+    command -v sg >/dev/null && CLIPROXY_LOG_SG=1 exec sg "$group" -c "$cmd"
+    CLIPROXY_LOG_SG=1 exec newgrp -c "$cmd" "$group"
   fi
 fi
 if [ "${1:-}" = --check-docker ]; then

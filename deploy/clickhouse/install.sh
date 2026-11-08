@@ -207,7 +207,7 @@ if [ "$install_timer" = 1 ]; then
   systemctl --user daemon-reload
   systemctl --user enable --now cliproxy-log-backup.timer
   # Check Docker access from where the timer runs: the systemd user manager, whose
-  # groups can predate a new docker group membership (backup.sh then uses sg).
+  # groups can predate a new docker group membership (backup.sh then uses sg or newgrp).
   if ! systemd-run --user --wait --quiet --collect "$HOME/.local/bin/cliproxy-log-backup" --check-docker >/dev/null 2>&1; then
     echo "warning: the backup timer cannot reach Docker; check that $(id -un) is in the socket's group (sudo usermod -aG docker $(id -un)) and see 'journalctl --user -n 20'" >&2
   fi

@@ -57,19 +57,19 @@ jobs:
 
       # The backup timer's systemd user manager can predate the user's docker group
       # membership. Move the socket to a group this job's processes lack, list the
-      # runner in it, and check the backup reaches Docker through sg only then.
+      # runner in it, and check the backup regains the group (through sg here) only then.
       - name: Backup from a session without the socket group
         run: |
           backup="$HOME/.local/bin/cliproxy-log-backup"
           out="$("$backup" --check-docker)"
-          if grep -q 'through sg' <<<"$out"; then echo "used sg although Docker was reachable"; exit 1; fi
+          if grep -q 'rerunning with group' <<<"$out"; then echo "switched groups although Docker was reachable"; exit 1; fi
           sudo groupadd cliproxy-sock
           sudo gpasswd -a "$USER" cliproxy-sock
           sudo chgrp cliproxy-sock /var/run/docker.sock
           if docker info >/dev/null 2>&1; then echo "Docker still reachable without the socket group"; exit 1; fi
           out="$(CLIPROXY_LOG_RESTIC_REPOSITORY="$(mktemp -d)/restic" "$backup" 2>&1)" || { echo "$out"; exit 1; }
           echo "$out"
-          grep -q 'rerunning through sg cliproxy-sock' <<<"$out"
+          grep -q 'rerunning with group cliproxy-sock' <<<"$out"
           grep -q ' done$' <<<"$out"
 
       - name: Server log

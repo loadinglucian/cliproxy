@@ -5,7 +5,7 @@ Documentation=https://github.com/loadinglucian/cliproxy/tree/main/deploy/clickho
 [Service]
 Type=oneshot
 ExecStart=%h/.local/bin/cliproxy-log-backup
-# No NoNewPrivileges=: backup.sh may need the setuid sg to reach Docker.
+# No NoNewPrivileges=: backup.sh may need the setuid sg or newgrp to reach Docker.
 # Stay out of the way of interactive work and the proxy.
 Nice=10
 IOSchedulingClass=idle

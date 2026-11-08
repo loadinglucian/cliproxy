@@ -157,7 +157,7 @@ Run it as `cliproxy_admin` (see Restore for the command).
 3. `restic forget --prune` keeping 7 daily, 4 weekly, and 6 monthly snapshots, then `restic check` on a 5% sample.
 4. Deletes the local copy (also when a step fails).
 
-The timer's systemd user manager keeps the groups it had when it started, so right after `usermod -aG docker` it lacks the docker group; the script then reruns itself through `sg docker`, so no reboot is needed. The staging copy needs free space equal to the database size during the run. Logs: `journalctl --user -u cliproxy-log-backup`. Run one now: `systemctl --user start cliproxy-log-backup` (or `cliproxy-log-backup` in a terminal).
+The timer's systemd user manager keeps the groups it had when it started, so right after `usermod -aG docker` it lacks the docker group; the script then reruns itself with that group through `sg` or `newgrp -c` (Arch), so no reboot is needed. The staging copy needs free space equal to the database size during the run. Logs: `journalctl --user -u cliproxy-log-backup`. Run one now: `systemctl --user start cliproxy-log-backup` (or `cliproxy-log-backup` in a terminal).
 
 Settings can be overridden with environment variables documented at the top of `backup.sh`, for example `CLIPROXY_LOG_RESTIC_REPOSITORY` for a different target.
 
