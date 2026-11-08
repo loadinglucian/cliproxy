@@ -331,6 +331,46 @@ func TestCollectorKeepsRawImageStreamBytes(t *testing.T) {
 	}
 }
 
+// A turn written as soon as its primary usage arrived still owns the side-model
+// record that follows; the record must not move to an older turn still waiting.
+func TestCollectorUsageForWrittenTurnStaysOffOlderTurn(t *testing.T) {
+	h := newHarness(t)
+	ws := http.Header{"Upgrade": {"websocket"}, "Authorization": {"Bearer " + testKey}}
+	h.request("turn1", "conn", "/v1/responses", ws, `{"input":"one"}`)
+	h.complete("turn1", pluginapi.RequestCompletionSucceeded, 200)
+
+	h.advance(time.Second)
+	h.request("turn2", "conn", "/v1/responses", ws, `{"input":"two"}`)
+	turn2Start := h.clock
+	primary := usageRecord("conn", "claude-real", false)
+	primary.RequestedAt = turn2Start
+	primary.Detail.OutputTokens = 222
+	h.feed(pluginabi.MethodUsageHandle, primary)
+	h.complete("turn2", pluginapi.RequestCompletionSucceeded, 200)
+	if len(h.rows) != 1 {
+		t.Fatalf("turn2 should be written once its usage settled; rows = %d", len(h.rows))
+	}
+	side := usageRecord("conn", "image-side-model", false)
+	side.Alias = "claude-alias"
+	side.RequestedAt = turn2Start
+	side.Detail.OutputTokens = 7
+	h.feed(pluginabi.MethodUsageHandle, side)
+	h.advance(h.cfg.UsageGrace)
+	h.c.sweep(false)
+
+	got := map[string]row{}
+	for i := range h.rows {
+		r := h.row(i)
+		got[r.RequestID] = r
+	}
+	if len(got) != 2 || got["turn1"].OutputTokens != 0 || got["turn2"].OutputTokens != 222 {
+		t.Fatalf("usage misattributed: turn1 %d %s, turn2 %d", got["turn1"].OutputTokens, got["turn1"].ServedModel, got["turn2"].OutputTokens)
+	}
+	if len(h.c.byTrace) != 0 {
+		t.Fatalf("trace bookkeeping left behind: %v", h.c.byTrace)
+	}
+}
+
 // Without an account email the host reports the raw client key as the usage
 // source; it must not reach the row.
 func TestCollectorNeverStoresKeyFallbackAsAccount(t *testing.T) {

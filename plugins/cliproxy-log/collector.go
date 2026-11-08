@@ -66,7 +66,15 @@ type collector struct {
 	done        chan struct{}
 
 	entries map[string]*entry
-	byTrace map[string][]*entry
+	byTrace map[string][]traceTurn
+}
+
+// traceTurn is one request on a trace, in the order first seen. Once the request is
+// written its entry is dropped (e == nil) but its start stays while an older request
+// on the trace is still open, so late usage for it is not moved to that older one.
+type traceTurn struct {
+	e         *entry
+	firstSeen time.Time
 }
 
 func newCollector(cfg func() *pluginConfig, emit func([]byte), now func() time.Time) *collector {
@@ -78,7 +86,7 @@ func newCollector(cfg func() *pluginConfig, emit func([]byte), now func() time.T
 		stopCh:  make(chan struct{}),
 		done:    make(chan struct{}),
 		entries: make(map[string]*entry),
-		byTrace: make(map[string][]*entry),
+		byTrace: make(map[string][]traceTurn),
 	}
 }
 
@@ -199,7 +207,7 @@ func (c *collector) onRequest(req pluginapi.RequestInterceptRequest, beforeAuth 
 		e.skip = strings.Contains(e.endpoint, "count_tokens")
 		c.entries[e.id] = e
 		if e.traceID != "" {
-			c.byTrace[e.traceID] = append(c.byTrace[e.traceID], e)
+			c.byTrace[e.traceID] = append(c.byTrace[e.traceID], traceTurn{e: e, firstSeen: e.firstSeen})
 		}
 	}
 	e.lastSeen = at
@@ -301,42 +309,37 @@ func (c *collector) onWebSocketEvent(ev pluginapi.WebSocketResponseEvent, at tim
 // connection every turn shares one TraceID and turns run one at a time, so a record
 // belongs to the newest turn first seen no later than its attempt started
 // (RequestedAt and firstSeen both come from the proxy's wall clock). When that turn
-// already has successful usage, as when an image tool publishes a side-model record
-// after the primary one, the record is ignored rather than moved to another turn.
-// Records without an attempt time go to the oldest turn still waiting for usage,
-// preferring a model match.
+// is already written or already has successful usage, as when an image tool
+// publishes a side-model record after the primary one, the record is ignored rather
+// than moved to another turn. Records without an attempt time go to the oldest open
+// turn still waiting for usage, preferring a model match.
 func (c *collector) onUsage(rec pluginapi.UsageRecord) {
 	if rec.TraceID == "" {
 		return
 	}
-	candidates := c.byTrace[rec.TraceID]
-	if len(candidates) == 0 {
-		return
-	}
+	turns := c.byTrace[rec.TraceID]
 	var target *entry
 	if !rec.RequestedAt.IsZero() {
-		// byTrace lists turns in the order they were first seen.
-		for i := len(candidates) - 1; i >= 0; i-- {
-			e := candidates[i]
-			if rec.RequestedAt.Before(e.firstSeen) {
+		for i := len(turns) - 1; i >= 0; i-- {
+			if rec.RequestedAt.Before(turns[i].firstSeen) {
 				continue
 			}
-			if !hasGoodUsage(e) {
+			if e := turns[i].e; e != nil && !hasGoodUsage(e) {
 				target = e
 			}
 			break
 		}
 	} else {
-		for _, e := range candidates {
-			if !hasGoodUsage(e) && usageModelMatches(e, rec) {
-				target = e
+		for _, turn := range turns {
+			if turn.e != nil && !hasGoodUsage(turn.e) && usageModelMatches(turn.e, rec) {
+				target = turn.e
 				break
 			}
 		}
 		if target == nil {
-			for _, e := range candidates {
-				if !hasGoodUsage(e) {
-					target = e
+			for _, turn := range turns {
+				if turn.e != nil && !hasGoodUsage(turn.e) {
+					target = turn.e
 					break
 				}
 			}
@@ -433,11 +436,15 @@ func (c *collector) remove(e *entry) {
 		return
 	}
 	list := c.byTrace[e.traceID]
-	for i, candidate := range list {
-		if candidate == e {
-			list = append(list[:i], list[i+1:]...)
+	for i := range list {
+		if list[i].e == e {
+			list[i].e = nil
 			break
 		}
+	}
+	// Written turns older than every open one can no longer change a match.
+	for len(list) > 0 && list[0].e == nil {
+		list = list[1:]
 	}
 	if len(list) == 0 {
 		delete(c.byTrace, e.traceID)
@@ -446,8 +453,6 @@ func (c *collector) remove(e *entry) {
 	}
 }
 
-// finalize removes e and emits its row. A panic while building the row drops that
-// one row; it must not reach the collector goroutine, where it would crash the host.
 func (c *collector) finalize(e *entry, now time.Time) {
 	c.remove(e)
 	defer func() {

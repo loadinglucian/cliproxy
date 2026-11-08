@@ -150,7 +150,7 @@ Codex WebSocket turns are visible to the same hooks as HTTP requests. `sdk/api/h
 
 ## Known limits
 
-- All turns on one WebSocket connection share a `TraceID`. Turns run one at a time, so a usage record goes to the newest turn first seen no later than the record's attempt started (`RequestedAt`); if that turn already has successful usage (an image tool's side-model record), the record is ignored. A late record therefore never lands on another turn. This compares wall-clock times, so a backward clock step of the proxy host between a turn's first hook and its usage reporter can leave that turn with tokens parsed from the response body instead.
+- All turns on one WebSocket connection share a `TraceID`. Turns run one at a time, so a usage record goes to the newest turn first seen no later than the record's attempt started (`RequestedAt`); if that turn is already written or already has successful usage (an image tool's side-model record), the record is ignored. A late record therefore never lands on another turn. This compares wall-clock times, so a backward clock step of the proxy host between a turn's first hook and its usage reporter can leave that turn with tokens parsed from the response body instead.
 - A stream cut at `max-body-bytes` reassembles only what was captured; the row is marked `truncated`.
 - With Codex response steering enabled, several client inputs can share one execution; they are logged as one row with the last upstream body.
 - Hooks see the client-protocol payload, not the bytes the executor finally sends upstream (see `upstream_request`).
