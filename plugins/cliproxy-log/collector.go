@@ -261,8 +261,10 @@ func (c *collector) onStreamChunk(req pluginapi.StreamChunkInterceptRequest, at 
 		return
 	}
 	chunk := req.Body
-	if len(chunk) > 0 && chunk[len(chunk)-1] != '\n' {
-		// Chunks are whole lines or whole events; keep their boundary visible.
+	if len(chunk) > 0 && chunk[len(chunk)-1] != '\n' && !strings.Contains(e.endpoint, "/images/") {
+		// Model streams arrive as whole lines or whole events, some without their
+		// newline; restore the boundary. Image streams forward raw 32 KiB reads that
+		// can split a line, so they are kept byte for byte.
 		chunk = append(chunk, '\n')
 	}
 	e.streamText = e.appendCapped(e.streamText, chunk, c.cfg().MaxBodyBytes)
