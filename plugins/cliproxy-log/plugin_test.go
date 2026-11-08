@@ -117,6 +117,26 @@ func TestHandleMethodContainsPanics(t *testing.T) {
 	}
 }
 
+// A quiesced copy is replaced but never shut down, so it must stop its writer at
+// quiesce; a rollback re-registers it and must start a fresh runtime.
+func TestQuiesceStopsRuntimeAndRegisterRestartsIt(t *testing.T) {
+	defer stopRuntime()
+	dir := t.TempDir()
+	request := registerRequest(t, "clickhouse-url: http://127.0.0.1:1\nspool-dir: "+dir+"\n")
+	if _, ok := handleMethod(pluginabi.MethodPluginRegister, request); !ok {
+		t.Fatal("register failed")
+	}
+	if out, ok := handleMethod(pluginabi.MethodPluginQuiesce, nil); !ok || string(out) != `{"ok":true}` {
+		t.Fatalf("quiesce = %s", out)
+	}
+	if currentCollector() != nil {
+		t.Fatalf("runtime still running after quiesce")
+	}
+	if _, ok := handleMethod(pluginabi.MethodPluginRegister, request); !ok || currentCollector() == nil {
+		t.Fatalf("register after quiesce did not restart the runtime")
+	}
+}
+
 func TestShutdownIsIdempotent(t *testing.T) {
 	dir := t.TempDir()
 	if _, ok := handleMethod(pluginabi.MethodPluginRegister, registerRequest(t, "clickhouse-url: http://127.0.0.1:1\nspool-dir: "+dir+"\n")); !ok {

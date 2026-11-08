@@ -142,7 +142,7 @@ Verified against the proxy's file watcher and `internal/pluginhost/host.go` (`Ap
 
 - **Enabling, disabling, or editing `plugins.configs.cliproxy-log`: no restart.** Saving `config.yaml` triggers `ApplyConfig`, which loads the plugin and calls `plugin.register`, calls `plugin.reconfigure` with the new YAML, or unloads it. The plugin applies new settings (including `machines` and the ClickHouse target) on the fly.
 - **Replacing the `.so` at the same path: needs a restart.** The host compares paths only, so an overwritten file is ignored until the next start.
-- **A new versioned file (`cliproxy-log-v0.2.0.so`) plus a config save hot-reloads**, but Go shared libraries cannot be unloaded: the old copy stays mapped and retired until the plugin is disabled or the proxy exits, and requests in flight during the swap end up as `abandoned` rows. Restart the proxy for binary updates.
+- **A new versioned file (`cliproxy-log-v0.2.0.so`) plus a config save hot-reloads**, but Go shared libraries cannot be unloaded: the old copy stays mapped and retired until the plugin is disabled or the proxy exits. The host quiesces the old copy first, and the plugin stops its collector and writer then, so only the new copy replays the spool; requests in flight during the swap end up as `abandoned` rows. Restart the proxy for binary updates.
 
 ## WebSocket turns
 

@@ -96,6 +96,11 @@ func handleMethod(method string, request []byte) (out []byte, ok bool) {
 		}
 		return raw, true
 	case pluginabi.MethodPluginQuiesce:
+		// The host quiesces this copy before a replacement library takes over and
+		// then keeps it loaded without shutting it down. Stopping here leaves one
+		// writer replaying the spool; a rollback calls plugin.register, which starts
+		// the runtime again.
+		stopRuntime()
 		return okEmptyEnvelope, true
 	case pluginabi.MethodPluginShutdown:
 		stopRuntime()
