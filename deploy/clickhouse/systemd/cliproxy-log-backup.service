@@ -1,0 +1,11 @@
+[Unit]
+Description=Back up the cliproxy-log ClickHouse database to the NAS
+Documentation=https://github.com/loadinglucian/cliproxy/tree/main/deploy/clickhouse
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/cliproxy-log-backup
+# Stay out of the way of interactive work and the proxy.
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=6h

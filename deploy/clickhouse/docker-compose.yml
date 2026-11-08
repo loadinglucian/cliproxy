@@ -1,0 +1,44 @@
+# ClickHouse for the cliproxy-log request history. Run through install.sh, which
+# exports the variables below; running `docker compose` by hand needs the same
+# exports (see README.md).
+name: cliproxy-log
+
+services:
+  clickhouse:
+    # 26.8 is the current LTS line; keep the digest so a re-pushed tag cannot change what runs.
+    image: clickhouse/clickhouse-server:26.8.34.13@sha256:8b28eb09479c36c4533eec7a6268917d04ba3a6fd90e3f4205f70e761b6d7779
+    container_name: cliproxy-clickhouse
+    restart: unless-stopped
+    # Run as the installing user so data, backups, and rendered config stay owned by
+    # that user and restic can read the backup files without root.
+    user: "${CLIPROXY_LOG_UID:-1000}:${CLIPROXY_LOG_GID:-1000}"
+    environment:
+      # Users come from the mounted users.d; stop the entrypoint from creating its own.
+      CLICKHOUSE_SKIP_USER_SETUP: "1"
+    ports:
+      # Loopback only: nothing outside this computer can reach the database.
+      - "127.0.0.1:${CLIPROXY_LOG_HTTP_PORT:-8123}:8123"
+    volumes:
+      - "${CLIPROXY_LOG_DATA_DIR:-${HOME}/.local/share/cliproxy-log}/clickhouse:/var/lib/clickhouse"
+      - "${CLIPROXY_LOG_DATA_DIR:-${HOME}/.local/share/cliproxy-log}/backups:/backups"
+      - "./config/cliproxy.xml:/etc/clickhouse-server/config.d/cliproxy.xml:ro"
+      - "${CLIPROXY_LOG_CONFIG_DIR:-${HOME}/.config/cliproxy-log}/users.d:/etc/clickhouse-server/users.d:ro"
+    # Hard cap for the container; the server sizes its own memory limit to 90% of this.
+    mem_limit: 16g
+    memswap_limit: 16g
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    stop_grace_period: 2m
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8123/ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: 20m
+        max-file: "3"
