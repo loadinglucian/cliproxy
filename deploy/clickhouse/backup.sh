@@ -72,8 +72,8 @@ if ! restic "${restic_args[@]}" cat config >/dev/null 2>&1; then
 fi
 
 log "uploading to $repository"
-# cd so snapshots store the stable relative path cliproxy_log/, whatever the data dir.
-(cd "$data_dir/backups" && restic "${restic_args[@]}" backup --host "$host" --tag "$tag" "$backup_name")
+# The staging path is the same every night, so restic sees one growing history of it.
+restic "${restic_args[@]}" backup --host "$host" --tag "$tag" "$staging"
 
 log "applying retention"
 restic "${restic_args[@]}" forget --host "$host" --tag "$tag" \
