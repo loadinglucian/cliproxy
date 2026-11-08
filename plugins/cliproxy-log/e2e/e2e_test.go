@@ -83,7 +83,7 @@ func TestPluginWritesRowsToClickHouse(t *testing.T) {
 	defer func() {
 		_ = cmd.Process.Kill()
 		_, _ = cmd.Process.Wait()
-		_ = logFile.Close()
+		closeOrLog(t, "proxy log file", logFile)
 		if t.Failed() {
 			raw, _ := os.ReadFile(logPath)
 			t.Logf("proxy log:\n%s", tail(string(raw), 8000))
@@ -119,7 +119,7 @@ func TestPluginWritesRowsToClickHouse(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodGet, base+"/v1/models", nil)
 	req.Header.Set("Authorization", "Bearer "+keyMapped)
 	if resp, errDo := http.DefaultClient.Do(req); errDo == nil {
-		_ = resp.Body.Close()
+		closeOrLog(t, "model list response", resp.Body)
 	}
 
 	rows := waitRows(t, chURL, marker, 4)
@@ -250,7 +250,7 @@ func runWebSocketTurn(t *testing.T, base, marker string) {
 	// Keep the connection open until the test ends, as a real client does between
 	// turns. Closing right after response.completed races the host's completion
 	// of the turn, which then reports outcome "canceled".
-	t.Cleanup(func() { _ = conn.Close() })
+	t.Cleanup(func() { closeOrLog(t, "websocket", conn) })
 	msg := fmt.Sprintf(`{"type":"response.create","model":"gpt-test-model","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"%s codex-ws"}]}]}`, marker)
 	if errWrite := conn.WriteMessage(websocket.TextMessage, []byte(msg)); errWrite != nil {
 		t.Fatalf("websocket write: %v", errWrite)
@@ -398,12 +398,16 @@ func splitSQL(sql string) []string {
 	return out
 }
 
-func chQuery(chURL, query string) ([]byte, error) {
+func chQuery(chURL, query string) (out []byte, err error) {
 	resp, errPost := http.Post(chURL+"/?user=default", "text/plain", strings.NewReader(query))
 	if errPost != nil {
 		return nil, errPost
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		if errClose := resp.Body.Close(); errClose != nil && err == nil {
+			out, err = nil, fmt.Errorf("close ClickHouse response: %w", errClose)
+		}
+	}()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("status %d: %s", resp.StatusCode, body)
@@ -457,7 +461,7 @@ func waitReady(t *testing.T, base string) {
 		req, _ := http.NewRequest(http.MethodGet, base+"/v1/models", nil)
 		req.Header.Set("Authorization", "Bearer "+keyMapped)
 		if resp, errDo := http.DefaultClient.Do(req); errDo == nil {
-			_ = resp.Body.Close()
+			closeOrLog(t, "readiness response", resp.Body)
 			if resp.StatusCode == http.StatusOK {
 				return
 			}
@@ -478,9 +482,17 @@ func post(t *testing.T, target string, headers map[string]string, body string) (
 	if errDo != nil {
 		t.Fatalf("POST %s: %v", target, errDo)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeOrLog(t, "POST response", resp.Body)
 	raw, _ := io.ReadAll(resp.Body)
 	return resp.StatusCode, string(raw)
+}
+
+// closeOrLog closes c and logs a failure under a fixed label, never content.
+func closeOrLog(t *testing.T, what string, c io.Closer) {
+	t.Helper()
+	if errClose := c.Close(); errClose != nil {
+		t.Logf("close %s: %v", what, errClose)
+	}
 }
 
 func expectOK(t *testing.T, name string, status int, body string) {
@@ -563,7 +575,7 @@ func freePort(t *testing.T) int {
 	if errListen != nil {
 		t.Fatal(errListen)
 	}
-	defer func() { _ = l.Close() }()
+	defer closeOrLog(t, "port probe listener", l)
 	return l.Addr().(*net.TCPAddr).Port
 }
 

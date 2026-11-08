@@ -328,7 +328,9 @@ func TestWriterSpoolsWhenAcknowledgementIsCut(t *testing.T) {
 		}
 		_, _ = buf.WriteString("HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nOk.")
 		_ = buf.Flush()
-		_ = conn.Close()
+		if errClose := conn.Close(); errClose != nil {
+			t.Errorf("close hijacked connection: %v", errClose)
+		}
 	}))
 	defer ch.Close()
 	h := newWriterHarness(t, ch.URL)
