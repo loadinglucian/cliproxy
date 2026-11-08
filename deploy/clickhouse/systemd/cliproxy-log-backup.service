@@ -1,0 +1,14 @@
+[Unit]
+Description=Back up the cliproxy-log ClickHouse database to the NAS
+Documentation=https://github.com/loadinglucian/cliproxy/tree/main/deploy/clickhouse
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/cliproxy-log-backup
+# No NoNewPrivileges=: backup.sh may need the setuid sg or newgrp to reach Docker.
+# Stay out of the way of interactive work and the proxy.
+Nice=10
+IOSchedulingClass=idle
+# No deadline: the first upload, or one after weeks offline, can take hours. SSH
+# keepalives in backup.sh end a dead connection, and the lock stops overlapping runs.
+TimeoutStartSec=infinity

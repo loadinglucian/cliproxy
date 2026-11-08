@@ -1,0 +1,11 @@
+[Unit]
+Description=Nightly backup of the cliproxy-log ClickHouse database
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+RandomizedDelaySec=20m
+# Catch up a run missed while the laptop was off or asleep.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

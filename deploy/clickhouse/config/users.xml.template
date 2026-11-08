@@ -1,0 +1,79 @@
+<?xml version="1.0"?>
+<!-- Users for the cliproxy-log ClickHouse. install.sh renders this template into
+     ~/.config/cliproxy-log/users.d/cliproxy-users.xml, replacing each @..._SHA256@
+     with the SHA-256 of a password it generated. Never put real hashes here. -->
+<clickhouse>
+    <profiles>
+        <cliproxy_writer>
+            <!-- Batch the plugin's one-row inserts server-side into fewer parts;
+                 the insert still returns only after the data is written. -->
+            <async_insert>1</async_insert>
+            <wait_for_async_insert>1</wait_for_async_insert>
+        </cliproxy_writer>
+        <cliproxy_reader>
+            <!-- readonly=2 allows read queries and per-query settings (the Play UI and
+                 most clients send some), but no writes or DDL. The constraints keep
+                 the limits below from being raised, or switched off with 0. -->
+            <readonly>2</readonly>
+            <max_execution_time>300</max_execution_time>
+            <max_memory_usage>8589934592</max_memory_usage>
+            <constraints>
+                <readonly>
+                    <const/>
+                </readonly>
+                <max_execution_time>
+                    <min>1</min>
+                    <max>300</max>
+                </max_execution_time>
+                <max_memory_usage>
+                    <min>1</min>
+                    <max>8589934592</max>
+                </max_memory_usage>
+            </constraints>
+        </cliproxy_reader>
+    </profiles>
+
+    <users>
+        <!-- The image's passwordless default user must not exist. -->
+        <default remove="remove"/>
+
+        <!-- Schema changes and backups, from inside the container only (docker exec). -->
+        <cliproxy_admin>
+            <password_sha256_hex>@ADMIN_SHA256@</password_sha256_hex>
+            <networks>
+                <ip>127.0.0.1</ip>
+                <ip>::1</ip>
+            </networks>
+            <profile>default</profile>
+            <quota>default</quota>
+        </cliproxy_admin>
+
+        <!-- The cliproxy-log plugin. Docker publishes the port on the host's loopback
+             only, and host connections arrive from the Docker bridge, so the network
+             restriction is the port binding rather than an IP list here. -->
+        <cliproxy_writer>
+            <password_sha256_hex>@WRITER_SHA256@</password_sha256_hex>
+            <networks>
+                <ip>::/0</ip>
+            </networks>
+            <profile>cliproxy_writer</profile>
+            <quota>default</quota>
+            <grants>
+                <query>GRANT INSERT, SELECT ON cliproxy_log.*</query>
+            </grants>
+        </cliproxy_writer>
+
+        <!-- Search tools and people browsing history. -->
+        <cliproxy_reader>
+            <password_sha256_hex>@READER_SHA256@</password_sha256_hex>
+            <networks>
+                <ip>::/0</ip>
+            </networks>
+            <profile>cliproxy_reader</profile>
+            <quota>default</quota>
+            <grants>
+                <query>GRANT SELECT ON cliproxy_log.*</query>
+            </grants>
+        </cliproxy_reader>
+    </users>
+</clickhouse>

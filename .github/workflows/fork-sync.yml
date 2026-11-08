@@ -1,0 +1,146 @@
+# Merges each new upstream release into main through an auto-merging PR. The logic
+# is in scripts/fork/sync.sh (runnable locally with --dry-run). A conflict or failed
+# build opens an issue for the maintainer and ends the run red, which triggers
+# GitHub's failed-workflow email.
+#
+# Writes (push, PR, auto-merge, issues) use SYNC_TOKEN, a fine-grained PAT owned by
+# the maintainer: GITHUB_TOKEN cannot push commits that touch .github/workflows/
+# (upstream merges do), and PRs it opens would not trigger fork-ci.
+#
+# The build and tests run upstream code no human has reviewed, so they run in the
+# check job, which has no secrets and a read-only GITHUB_TOKEN. Jobs run on separate
+# runners, so nothing the check job runs can reach SYNC_TOKEN. The publish job holds
+# SYNC_TOKEN and runs only scripts/fork/sync.sh from this workflow's own checkout: it
+# redoes the merge with git alone and acts only if the check job's result describes
+# exactly that merge.
+name: fork-sync
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Upstream tag to merge instead of the latest release (optional)
+        required: false
+        type: string
+        default: ''
+      dry_run:
+        description: Merge and test without pushing, opening a PR, or filing an issue
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-sync
+  cancel-in-progress: false
+
+jobs:
+  # Runs on dry runs too, so workflows added by an earlier upstream merge are
+  # switched off even when this run finds nothing new. publish waits for it, so
+  # nothing is pushed while an upstream workflow may still be enabled.
+  disable-foreign-workflows:
+    name: disable-foreign-workflows
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Disable non-fork workflows
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/fork/disable-foreign-workflows.sh
+
+  check:
+    name: check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+      statuses: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e # v5.2.3
+        with:
+          version: 2026.10.18
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-sync-${{ runner.os }}-${{ hashFiles('mise.lock', 'go.sum') }}
+          restore-keys: go-sync-${{ runner.os }}-
+
+      - name: Merge and test upstream release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          args=(--phase check --result-dir "$RUNNER_TEMP/sync-result")
+          if [[ -n "${TAG:-}" ]]; then args+=(--tag "$TAG"); fi
+          scripts/fork/sync.sh "${args[@]}"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sync-result
+          path: ${{ runner.temp }}/sync-result/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: publish
+    needs: [check, disable-foreign-workflows]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      checks: read
+      statuses: read
+      pull-requests: read
+      issues: read
+    steps:
+      - name: Require SYNC_TOKEN
+        env:
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+        run: |
+          if [[ -z "$SYNC_TOKEN" ]]; then
+            echo "::error::Repository secret SYNC_TOKEN is missing; see FORK.md"
+            echo "## Sync blocked: repository secret SYNC_TOKEN is missing (see FORK.md)" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_TOKEN }}
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: sync-result
+          path: ${{ runner.temp }}/sync-result
+
+      - name: Publish sync PR or report failure
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          SYNC_READ_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          args=(--phase publish --result-dir "$RUNNER_TEMP/sync-result")
+          if [[ -n "${TAG:-}" ]]; then args+=(--tag "$TAG"); fi
+          if [[ "${DRY_RUN:-false}" == "true" ]]; then args+=(--dry-run); fi
+          scripts/fork/sync.sh "${args[@]}"

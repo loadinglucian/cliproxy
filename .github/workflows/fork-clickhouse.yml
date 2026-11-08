@@ -1,0 +1,77 @@
+# Installs the cliproxy-log ClickHouse (deploy/clickhouse) on a runner and checks
+# the schema contract, user permissions, idempotency, and backup/restore.
+name: fork-clickhouse
+
+on:
+  pull_request:
+    paths:
+      - "deploy/clickhouse/**"
+      - ".github/workflows/fork-clickhouse.yml"
+  push:
+    branches: [main]
+    paths:
+      - "deploy/clickhouse/**"
+      - ".github/workflows/fork-clickhouse.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-clickhouse-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  clickhouse:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Shellcheck
+        run: shellcheck deploy/clickhouse/*.sh deploy/clickhouse/bench/*.sh deploy/clickhouse/test/*.sh
+
+      - name: Install restic
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends restic
+
+      - name: Install
+        run: deploy/clickhouse/install.sh --no-timer
+
+      # The second run re-applies the schema and re-renders users over a live server.
+      - name: Install again (idempotency)
+        run: deploy/clickhouse/install.sh --no-timer
+
+      # git replaces files on pull; the rerun must hand the new server config to ClickHouse.
+      - name: Install after a server config change
+        run: |
+          sed -i 's|</clickhouse>|<!-- ci --></clickhouse>|' deploy/clickhouse/config/cliproxy.xml
+          deploy/clickhouse/install.sh --no-timer
+          docker exec cliproxy-clickhouse grep -q -- '<!-- ci -->' /etc/clickhouse-server/config.d/cliproxy.xml
+
+      - name: Smoke test, backup, and restore
+        run: deploy/clickhouse/test/smoke.sh --with-backup
+
+      # The backup timer's systemd user manager can predate the user's docker group
+      # membership. Move the socket to a group this job's processes lack, list the
+      # runner in it, and check the backup regains the group (through sg here) only then.
+      - name: Backup from a session without the socket group
+        run: |
+          backup="$HOME/.local/bin/cliproxy-log-backup"
+          out="$("$backup" --check-docker)"
+          if grep -q 'rerunning with group' <<<"$out"; then echo "switched groups although Docker was reachable"; exit 1; fi
+          sudo groupadd cliproxy-sock
+          sudo gpasswd -a "$USER" cliproxy-sock
+          sudo chgrp cliproxy-sock /var/run/docker.sock
+          if docker info >/dev/null 2>&1; then echo "Docker still reachable without the socket group"; exit 1; fi
+          out="$(CLIPROXY_LOG_RESTIC_REPOSITORY="$(mktemp -d)/restic" "$backup" 2>&1)" || { echo "$out"; exit 1; }
+          echo "$out"
+          grep -q 'rerunning with group cliproxy-sock' <<<"$out"
+          grep -q ' done$' <<<"$out"
+
+      - name: Server log
+        if: failure()
+        run: sudo docker logs --tail 200 cliproxy-clickhouse
