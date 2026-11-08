@@ -1,3 +1,6 @@
 # Pins the Go toolchain to the go directive in go.mod. Bump both together.
+# CI pins mise 2026.10.18 in .github/workflows/fork-*.yml, which reads mise.lock
+# lockfile_version 3 only. Regenerate the lock with that mise version, or raise
+# the pin in every fork-*.yml first; mise 2026.11.1 and later write version 4.
 [tools]
 go = "1.26.10"

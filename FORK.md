@@ -28,6 +28,8 @@ mise install
 mise exec -- scripts/fork/build.sh all    # server (CGO), go test ./..., plugins
 ```
 
+CI pins mise 2026.10.18, which only reads `mise.lock` format version 3; newer mise writes version 4. When changing the Go version, regenerate the lock with that mise release (`mise lock --platform linux-x64,linux-arm64,macos-arm64,macos-x64`) or raise the pin in every `fork-*.yml` first.
+
 `build.sh plugins` builds every `plugins/<name>/` as a c-shared library into `bin/plugins/`. A plugin with its own `go.mod` also gets its own `go test ./...`.
 
 ## CI
