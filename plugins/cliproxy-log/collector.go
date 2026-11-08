@@ -297,7 +297,10 @@ func (c *collector) onWebSocketEvent(ev pluginapi.WebSocketResponseEvent, at tim
 // onUsage attaches a usage record. The host gives usage records their own per-attempt
 // ID, so they correlate by TraceID (the inbound HTTP request) instead. On a WebSocket
 // connection every turn shares one TraceID; turns run one at a time, so the oldest
-// turn still waiting for usage is the match.
+// turn still waiting for usage is the match. A record whose attempt started before a
+// turn was first seen belongs to an earlier turn (a late record, or the side-model
+// record an image tool publishes after the primary one) and never moves to a later
+// turn.
 func (c *collector) onUsage(rec pluginapi.UsageRecord) {
 	if rec.TraceID == "" {
 		return
@@ -308,14 +311,14 @@ func (c *collector) onUsage(rec pluginapi.UsageRecord) {
 	}
 	var target *entry
 	for _, e := range candidates {
-		if !hasGoodUsage(e) && usageModelMatches(e, rec) {
+		if usageCanAttach(e, rec) && usageModelMatches(e, rec) {
 			target = e
 			break
 		}
 	}
 	if target == nil {
 		for _, e := range candidates {
-			if !hasGoodUsage(e) {
+			if usageCanAttach(e, rec) {
 				target = e
 				break
 			}
@@ -326,6 +329,10 @@ func (c *collector) onUsage(rec pluginapi.UsageRecord) {
 	}
 	if target.usage == nil || target.usage.Failed || !rec.Failed {
 		copied := rec
+		if copied.Source == rec.APIKey {
+			// Without an account email the host falls back to the client key as Source.
+			copied.Source = ""
+		}
 		copied.APIKey = ""
 		target.usage = &copied
 	}
@@ -336,6 +343,16 @@ func (c *collector) onUsage(rec pluginapi.UsageRecord) {
 }
 
 func hasGoodUsage(e *entry) bool { return e.usage != nil && !e.usage.Failed }
+
+// usageCanAttach reports whether rec may still improve e: e lacks successful usage
+// and rec's attempt did not start before e was first seen. RequestedAt and firstSeen
+// both come from the proxy process's wall clock.
+func usageCanAttach(e *entry, rec pluginapi.UsageRecord) bool {
+	if hasGoodUsage(e) {
+		return false
+	}
+	return rec.RequestedAt.IsZero() || !rec.RequestedAt.Before(e.firstSeen)
+}
 
 func usageModelMatches(e *entry, rec pluginapi.UsageRecord) bool {
 	return rec.Model != "" && (rec.Model == e.servedModel || rec.Model == e.requestedModel || rec.Alias == e.requestedModel)
@@ -421,8 +438,16 @@ func (c *collector) remove(e *entry) {
 	}
 }
 
+// finalize removes e and emits its row. A panic while building the row drops that
+// one row; it must not reach the collector goroutine, where it would crash the host.
 func (c *collector) finalize(e *entry, now time.Time) {
 	c.remove(e)
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			stats.panics.Add(1)
+			stats.rowsDropped.Add(1)
+		}
+	}()
 	r := buildRow(e, c.cfg(), now)
 	raw, errMarshal := marshalNoEscape(r)
 	if errMarshal != nil {

@@ -355,7 +355,7 @@ func (w *writer) spool(body []byte, n int) {
 	name := fmt.Sprintf("%020d-%06d-%d%s", w.now().UnixNano(), w.seq%1000000, n, spoolSuffix)
 	final := filepath.Join(w.spoolDir, name)
 	tmp := final + ".tmp"
-	if errWrite := os.WriteFile(tmp, body, 0o600); errWrite != nil {
+	if errWrite := writeFileSync(tmp, body); errWrite != nil {
 		_ = os.Remove(tmp)
 		stats.rowsDropped.Add(uint64(n))
 		logWarn("cliproxy-log: cannot write spool file; dropped batch", map[string]any{"rows": n, "error": errWrite.Error()})
@@ -405,6 +405,14 @@ func (w *writer) replaySpool() {
 			continue
 		}
 		n := spoolRowCount(name)
+		if !gzipIntact(body) {
+			// A file cut short (for example by a power loss) can never be inserted;
+			// ClickHouse answers it with a 500 that would stall replay behind it.
+			stats.rowsDropped.Add(uint64(n))
+			logWarn("cliproxy-log: spool file is corrupt; dropped", map[string]any{"rows": n})
+			w.removeSpoolFile(path, len(body))
+			continue
+		}
 		errSend := w.send(body)
 		switch {
 		case errSend == nil:
@@ -417,15 +425,47 @@ func (w *writer) replaySpool() {
 			w.markUnhealthy(errSend)
 			return
 		}
-		if errRemove := os.Remove(path); errRemove == nil {
-			w.spoolMu.Lock()
-			w.spoolTotal -= int64(len(body))
-			if w.spoolTotal < 0 {
-				w.spoolTotal = 0
-			}
-			w.spoolMu.Unlock()
-		}
+		w.removeSpoolFile(path, len(body))
 	}
+}
+
+func (w *writer) removeSpoolFile(path string, size int) {
+	if errRemove := os.Remove(path); errRemove != nil {
+		return
+	}
+	w.spoolMu.Lock()
+	w.spoolTotal -= int64(size)
+	if w.spoolTotal < 0 {
+		w.spoolTotal = 0
+	}
+	w.spoolMu.Unlock()
+}
+
+// writeFileSync writes and fsyncs a new file, so a rename after it cannot leave a
+// renamed but empty or partial spool file behind a power loss.
+func writeFileSync(path string, data []byte) error {
+	f, errOpen := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if errOpen != nil {
+		return errOpen
+	}
+	_, errWrite := f.Write(data)
+	if errWrite == nil {
+		errWrite = f.Sync()
+	}
+	if errClose := f.Close(); errWrite == nil {
+		errWrite = errClose
+	}
+	return errWrite
+}
+
+// gzipIntact reports whether body is a complete gzip stream.
+func gzipIntact(body []byte) bool {
+	zr, errReader := gzip.NewReader(bytes.NewReader(body))
+	if errReader != nil {
+		return false
+	}
+	_, errCopy := io.Copy(io.Discard, zr)
+	return errCopy == nil
 }
 
 // spoolRowCount reads the row count encoded in a spool file name.

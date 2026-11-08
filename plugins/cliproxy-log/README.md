@@ -107,7 +107,7 @@ All contract columns of `cliproxy_log.requests` are written. Notable sources:
 | `endpoint` | Route path, for example `/v1/messages`. |
 | `transport` | `websocket` when the client request was a WebSocket upgrade, else `http`. |
 | `source_format`, `target_format` | Client protocol (`claude`, `openai-response`, ...) and upstream protocol after credential selection. |
-| `provider`, `auth_id`, `account` | Usage record (or WebSocket event). `account` is the OAuth account email, or the credential label from WebSocket events; it stays empty for API-key credentials because their usage "source" can be the upstream key itself. |
+| `provider`, `auth_id`, `account` | Usage record (or WebSocket event). `account` is the OAuth account email, or the credential label from WebSocket events. It is empty otherwise: the usage "source" of an API-key credential, or of an OAuth credential without an email, is an upstream or client key. |
 | `requested_model`, `served_model`, `response_model` | Client's model; model sent upstream; `model` field in the reply. |
 | `session_id` | Usage record. |
 | `reasoning_effort`, `service_tier` | Usage record, falling back to request metadata. |
@@ -130,7 +130,7 @@ Logging never blocks or fails a request:
 - Hooks copy the payload, queue it, and return at once. Decoding, correlation, and reassembly run on one background goroutine. When the queue holds more than 512 MiB or 65,536 events, new events are dropped and counted (`events_dropped`). At most 10,000 requests are tracked at once.
 - Every exported entry point and the background goroutines recover from panics (`panics` counter) and return "no change" to the host.
 - A writer goroutine sends batches every 2 s or at 500 rows (or 16 MiB) as gzip `INSERT INTO cliproxy_log.requests FORMAT JSONEachRow` over HTTP.
-- When an insert fails, the batch is written to `spool-dir` as a gzip file and the writer backs off (1 s doubling to 60 s). During backoff new batches go straight to the spool. After the backoff the oldest spool file is the health probe; once it succeeds, the spool is replayed oldest first, 20 files per cycle. Spool files survive restarts.
+- When an insert fails, the batch is written to `spool-dir` as a gzip file and the writer backs off (1 s doubling to 60 s). During backoff new batches go straight to the spool. After the backoff the oldest spool file is the health probe; once it succeeds, the spool is replayed oldest first, 20 files per cycle. Spool files survive restarts. Each is fsynced before it is renamed into place, and a file that is not a complete gzip stream (cut short by a power loss) is dropped and counted on replay instead of blocking the files behind it.
 - Past `spool-max-bytes`, batches are dropped and counted (`rows_dropped`). An HTTP 400 from ClickHouse means the batch itself is malformed, so it is dropped and counted (`rows_rejected`) instead of retried forever.
 - On shutdown the plugin writes every in-flight request (incomplete ones as `abandoned`) and makes one last insert attempt, spooling on failure. If ClickHouse has not answered within 10 s, the pending insert is canceled and its rows go to the spool too.
 - An insert counts as written only when ClickHouse answers HTTP 200 and the reply is read in full; a cut-off reply is retried from the spool, which can duplicate that batch.
@@ -150,7 +150,7 @@ Codex WebSocket turns are visible to the same hooks as HTTP requests. `sdk/api/h
 
 ## Known limits
 
-- All turns on one WebSocket connection share a `TraceID`. A usage record goes to the oldest turn still waiting for usage (preferring a model match). Turns run one at a time, so this is right unless a turn's usage record never arrives, in which case the next turn's record could land on it.
+- All turns on one WebSocket connection share a `TraceID`. A usage record goes to the oldest turn still waiting for usage (preferring a model match) that was first seen no later than the record's attempt started, so a late record or an image tool's side-model record never lands on a later turn. Turns run one at a time, so this is right unless a turn's own record never arrives and an earlier turn is still waiting, in which case that earlier turn could take it.
 - A stream cut at `max-body-bytes` reassembles only what was captured; the row is marked `truncated`.
 - With Codex response steering enabled, several client inputs can share one execution; they are logged as one row with the last upstream body.
 - Hooks see the client-protocol payload, not the bytes the executor finally sends upstream (see `upstream_request`).

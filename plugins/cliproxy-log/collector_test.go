@@ -240,6 +240,85 @@ func TestCollectorWebSocketTurnsShareTrace(t *testing.T) {
 	}
 }
 
+// The image tool publishes a side-model usage record after the primary one, with
+// the same trace and alias. Arriving after the next turn started, it must not take
+// that turn's place.
+func TestCollectorSideModelUsageStaysOffLaterTurn(t *testing.T) {
+	h := newHarness(t)
+	ws := http.Header{"Upgrade": {"websocket"}, "Authorization": {"Bearer " + testKey}}
+	h.request("turn1", "conn", "/v1/responses", ws, `{"input":"one"}`)
+	turn1Start := h.clock
+	primary := usageRecord("conn", "claude-real", false)
+	primary.RequestedAt = turn1Start
+	primary.Detail.OutputTokens = 111
+	h.feed(pluginabi.MethodUsageHandle, primary)
+	h.complete("turn1", pluginapi.RequestCompletionSucceeded, 200)
+
+	h.advance(time.Second)
+	h.request("turn2", "conn", "/v1/responses", ws, `{"input":"two"}`)
+	side := usageRecord("conn", "image-side-model", false)
+	side.Alias = "claude-alias"
+	side.RequestedAt = turn1Start
+	side.Detail.OutputTokens = 7
+	h.feed(pluginabi.MethodUsageHandle, side)
+	second := usageRecord("conn", "claude-real", false)
+	second.RequestedAt = h.clock
+	second.Detail.OutputTokens = 999
+	h.feed(pluginabi.MethodUsageHandle, second)
+	h.complete("turn2", pluginapi.RequestCompletionSucceeded, 200)
+
+	if len(h.rows) != 2 {
+		t.Fatalf("rows = %d", len(h.rows))
+	}
+	got := map[string]row{}
+	for i := range h.rows {
+		r := h.row(i)
+		got[r.RequestID] = r
+	}
+	if got["turn1"].OutputTokens != 111 || got["turn2"].OutputTokens != 999 || got["turn2"].ServedModel != "claude-real" {
+		t.Fatalf("side-model usage misattributed: turn1 %d, turn2 %d %s", got["turn1"].OutputTokens, got["turn2"].OutputTokens, got["turn2"].ServedModel)
+	}
+}
+
+// Without an account email the host reports the raw client key as the usage
+// source; it must not reach the row.
+func TestCollectorNeverStoresKeyFallbackAsAccount(t *testing.T) {
+	for _, tc := range []struct{ name, source string }{
+		{"client key", testKey},
+		{"credential key", "sk-upstream-credential"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.request("r1", "t1", "/v1/messages", http.Header{"X-Api-Key": {testKey}}, `{}`)
+			rec := usageRecord("t1", "claude-real", false)
+			rec.Source = tc.source
+			h.feed(pluginabi.MethodUsageHandle, rec)
+			h.complete("r1", pluginapi.RequestCompletionSucceeded, 200)
+			if r := h.row(0); r.Account != "" {
+				t.Fatalf("account = %q", r.Account)
+			}
+			if bytes.Contains(h.rows[0], []byte(tc.source)) {
+				t.Fatalf("key fallback stored in row: %s", h.rows[0])
+			}
+		})
+	}
+}
+
+// A panic while a sweep finalizes a row drops that row and is counted; it must not
+// escape the collector goroutine.
+func TestCollectorSweepContainsFinalizePanic(t *testing.T) {
+	h := newHarness(t)
+	h.c.emit = func([]byte) { panic("emit failed") }
+	h.request("r1", "t1", "/v1/messages", http.Header{}, `{}`)
+	h.complete("r1", pluginapi.RequestCompletionSucceeded, 200)
+	h.request("r2", "t2", "/v1/messages", http.Header{}, `{}`)
+	panicsBefore, droppedBefore := stats.panics.Load(), stats.rowsDropped.Load()
+	h.c.sweep(true)
+	if stats.panics.Load() != panicsBefore+2 || stats.rowsDropped.Load() != droppedBefore+2 || len(h.c.entries) != 0 {
+		t.Fatalf("panics +%d dropped +%d entries %d", stats.panics.Load()-panicsBefore, stats.rowsDropped.Load()-droppedBefore, len(h.c.entries))
+	}
+}
+
 func TestCollectorWebSocketLabelWhenNoUsage(t *testing.T) {
 	h := newHarness(t)
 	h.request("turn1", "conn", "/v1/responses", http.Header{"Upgrade": {"websocket"}}, `{}`)

@@ -219,6 +219,35 @@ func TestWriterReplaysSpoolLeftByPreviousRun(t *testing.T) {
 	}
 }
 
+// A spool file cut short must be dropped and counted, not retried forever ahead of
+// the good files behind it.
+func TestWriterDropsCorruptSpoolFileAndReplaysTheRest(t *testing.T) {
+	ch := newFakeClickHouse(t)
+	h := newWriterHarness(t, ch.URL)
+	if errMkdir := os.MkdirAll(h.cfg.SpoolDir, 0o700); errMkdir != nil {
+		t.Fatal(errMkdir)
+	}
+	good, _ := gzipRows([][]byte{[]byte(`{"request_id":"good"}`)})
+	files := map[string][]byte{
+		"00000000000000000001-000001-3" + spoolSuffix: good[:len(good)/2],
+		"00000000000000000002-000002-0" + spoolSuffix: nil,
+		"00000000000000000003-000003-1" + spoolSuffix: good,
+	}
+	for name, body := range files {
+		if errWrite := os.WriteFile(filepath.Join(h.cfg.SpoolDir, name), body, 0o600); errWrite != nil {
+			t.Fatal(errWrite)
+		}
+	}
+	droppedBefore, writtenBefore := stats.rowsDropped.Load(), stats.rowsWritten.Load()
+	h.w.cycle(true)
+	if ch.rowCount() != 1 || stats.rowsWritten.Load() != writtenBefore+1 || stats.rowsDropped.Load() != droppedBefore+3 {
+		t.Fatalf("rows %d written +%d dropped +%d", ch.rowCount(), stats.rowsWritten.Load()-writtenBefore, stats.rowsDropped.Load()-droppedBefore)
+	}
+	if left := spoolFiles(t, h.cfg.SpoolDir); len(left) != 0 || h.w.spoolBytes() != 0 || !h.w.healthy {
+		t.Fatalf("spool not emptied: %v", left)
+	}
+}
+
 func TestWriterStopFlushes(t *testing.T) {
 	ch := newFakeClickHouse(t)
 	h := newWriterHarness(t, ch.URL)

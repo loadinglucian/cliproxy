@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"math"
+	"strings"
 	"time"
 )
 
@@ -142,9 +143,10 @@ func buildRow(e *entry, cfg *pluginConfig, now time.Time) row {
 		if u.AuthID != "" {
 			r.AuthID = u.AuthID
 		}
-		// Source is the account email for OAuth credentials; for API-key credentials
-		// it can be the upstream key itself, so it is only used for OAuth.
-		if u.AuthType == "oauth" && u.Source != "" {
+		// Source is the account email for OAuth credentials. Without an email the host
+		// falls back to the credential's or the client's API key, and for API-key
+		// credentials it is the upstream key, so only an OAuth email is stored.
+		if u.AuthType == "oauth" && strings.Contains(u.Source, "@") {
 			r.Account = u.Source
 		}
 		if u.Model != "" {
