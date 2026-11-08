@@ -432,13 +432,15 @@ func (c *collector) finalize(e *entry, now time.Time) {
 	c.emit(raw)
 }
 
-// capped copies src, cutting it at max bytes and flagging the entry as truncated.
+// capped returns src cut at max bytes, flagging the entry as truncated. src is a
+// freshly decoded slice owned by the collector; a cut copies so the oversized
+// original can be freed.
 func (e *entry) capped(src []byte, max int) []byte {
 	if len(src) > max {
 		e.truncated = true
-		src = src[:max]
+		return append([]byte(nil), src[:max]...)
 	}
-	return append([]byte(nil), src...)
+	return src
 }
 
 // appendCapped appends src to dst without letting dst exceed max bytes.
