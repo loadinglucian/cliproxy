@@ -28,7 +28,7 @@ mise install
 mise exec -- scripts/fork/build.sh all    # server (CGO), go test ./..., plugins
 ```
 
-CI pins mise 2026.10.18, which only reads `mise.lock` format version 3; newer mise writes version 4. When changing the Go version, regenerate the lock with that mise release (`mise lock --platform linux-x64,linux-arm64,macos-arm64,macos-x64`) or raise the pin in every `fork-*.yml` first.
+CI pins mise 2026.10.18, which only reads `mise.lock` format version 3; newer mise writes version 4. When changing the Go version, regenerate the lock with that mise release (`mise lock --platform linux-x64,macos-arm64`, the platforms `mise.lock` covers) or raise the pin in every `fork-*.yml` first.
 
 `build.sh plugins` builds every `plugins/<name>/` as a c-shared library into `bin/plugins/`. A plugin with its own `go.mod` also gets its own `go test ./...`.
 
@@ -45,9 +45,11 @@ CI pins mise 2026.10.18, which only reads `mise.lock` format version 3; newer mi
 1. Reads upstream's latest release tag and stops if that commit is already in `main`.
 2. Creates `sync/upstream-<tag>` from `main` and runs `git merge --no-ff <tag>` with the message `chore: merge upstream <tag>`, committed as Lucian.
 3. Runs the same build and test commands as CI.
-4. Pushes the branch, opens the PR `chore: merge upstream <tag>`, and enables auto-merge with a merge commit. CI runs on the PR and GitHub merges it when the checks pass.
+4. Pushes the branch, opens the PR `chore: merge upstream <tag>`, and enables auto-merge with a merge commit. CI runs on the PR and GitHub merges it when the checks pass. If the PR is already open, it only turns auto-merge back on when it is off. PRs from forks never count as sync PRs, whatever their branch name.
 
 Writes use the `SYNC_TOKEN` repository secret, a fine-grained token owned by Lucian for this repository only (Contents, Pull requests, Issues, and Workflows read/write). `GITHUB_TOKEN` cannot push commits that touch `.github/workflows/`, and PRs it opens do not trigger CI. If the secret is missing or expired the run fails with that message; create a new token with the same permissions and save it as `SYNC_TOKEN`.
+
+Steps 1 to 3 run upstream code nobody has reviewed, so the workflow splits them from the writes. The `check` job (`sync.sh --phase check`) merges, builds, and tests with no secrets and a read-only `GITHUB_TOKEN`, and uploads its outcome. The `publish` job, on a separate runner, holds `SYNC_TOKEN`, redoes the merge with git only, and pushes or files the issue only when the check outcome names the same upstream commit, base commit, and merged tree. Locally, `sync.sh` runs every step in one process.
 
 Upstream tags are fetched into `refs/fork-sync/*` on the runner only and are never pushed here. This repository's own tags are the `v*-lucian.*` release tags.
 
@@ -59,7 +61,7 @@ When a merge conflicts or the build or tests fail, nothing is pushed. The run:
 - writes the same details to the run's summary page;
 - ends red, so GitHub's failed-workflow email reaches Lucian.
 
-Every run also ends red while any open sync PR has failing checks, so a stuck PR keeps sending email until it is fixed or closed.
+Every run also ends red while any open sync PR has failing checks, so a stuck PR keeps sending email until it is fixed or closed. When closing one instead of fixing it, also delete its branch: a later run reuses an existing `sync/upstream-<tag>` branch and would open a new auto-merging PR from it.
 
 To preview a sync without writing anything: `mise exec -- scripts/fork/sync.sh --dry-run [--tag <tag>]`.
 
@@ -93,7 +95,7 @@ git tag -a v8.0.60-lucian.1 -m "v8.0.60-lucian.1"
 git push origin v8.0.60-lucian.1
 ```
 
-`fork-release` refuses a tag whose upstream version is not an ancestor of the tagged commit. It builds on Ubuntu 24.04 (glibc 2.39, fine for Arch) and publishes a release with:
+`fork-release` refuses a tag whose commit is not on `main`, or whose upstream version is not an ancestor of the tagged commit. It builds on Ubuntu 24.04 (glibc 2.39, fine for Arch) and publishes a release with:
 
 - `CLIProxyAPI_<version>_linux_amd64.tar.gz`: the server (`cli-proxy-api`, CGO, plugin support) with `LICENSE`, `README.md`, `FORK.md`, and `config.example.yaml`;
 - `<plugin>_linux_amd64.so` for each `plugins/<name>/`;
