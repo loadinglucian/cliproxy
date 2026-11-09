@@ -34,3 +34,8 @@
 # TestEndToEndAuthFile{Replacement,Patch}_RestoresModelsInV1ModelsWithoutRestart in
 # the same run. First seen 2026-11-09.
 ./sdk/cliproxy TestHandleAuthUpdates_SameRevisionWaitDoesNotWaitForOtherAuthInBatch
+
+# Concurrent PUT openai-compatibility and PATCH prefix requests can get the last prefix
+# registration and its one retry both discarded as superseded; the test then asserts
+# pfx-9 without waiting on the watcher's auth update queue. First seen 2026-11-09.
+./sdk/cliproxy TestPutOpenAICompatConcurrentWithAuthFieldsPatch_Issue6559
