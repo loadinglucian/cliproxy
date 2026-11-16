@@ -28,6 +28,10 @@
 -- compute it on every read until the one-time backfill rewrites them; see README.md
 -- ("Backfill request_tail").
 --
+-- ADD COLUMN IF NOT EXISTS never changes an existing column, so rerunning install.sh
+-- after editing the expression below does nothing on a database that already has
+-- it: apply the edit with ALTER TABLE ... MODIFY COLUMN, then MATERIALIZE COLUMN again.
+--
 -- Plain ZSTD(3) with default blocks: search scans this column, and the 16-32 MiB
 -- blocks of the body columns would make every scan decompress far more than it reads.
 

@@ -18,10 +18,11 @@
 --     previous turn; plain ZSTD(3) only looks back 2 MiB.
 --   * Monthly partitions keep parts small enough to merge and make it cheap to drop
 --     or archive old months later. Data is kept forever for now (no TTL).
---   * Text indexes (GA in 26.x) on client_request and response turn substring and
---     token searches into posting-list lookups instead of full scans. The latest
---     client_request of a session contains every earlier user and assistant message,
---     so these two columns cover the whole history. upstream_request is not indexed:
+--   * Text indexes (GA in 26.x) on client_request and response let case-sensitive
+--     LIKE and hasToken skip parts without a rare token. ILIKE does not use them, and
+--     on real traffic common tokens are in every part, so history search reads
+--     request_tail (002_request_tail.sql) and response instead of client_request,
+--     which repeats a session's history in every row. upstream_request is not indexed:
 --     it is the same client-format payload after credential selection and model
 --     rewriting (the proxy translates it to the upstream protocol later, where
 --     plugins cannot see it), so it repeats client_request's text.
