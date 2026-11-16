@@ -17,9 +17,10 @@
 -- function_call, and similar; *_output items, the tool results, count as input). An
 -- item with an unknown role, or with neither role nor type, counts as input. Bodies
 -- that nest their turns elsewhere, such as gemini-cli's request.contents, give an
--- empty value; the fleet sends Claude and Codex traffic only. A plain-string input is kept whole. The system prompt and
+-- empty value; the fleet sends Claude and Codex traffic only. An image-generation
+-- request (openai-image) keeps its prompt string. A plain-string input is kept whole. The system prompt and
 -- tool definitions are left out: they repeat in every request and match every search.
--- Base64 payloads of 256 characters or more under data, image_url, or file_data
+-- Base64 payloads of 256 characters or more under data, image_url, file_data, or url
 -- (screenshots, files) are emptied; they are most of the bytes and hold no text.
 -- A body that is not valid JSON (cut at max-body-bytes, marked truncated) yields an
 -- empty value. History a session starts with is not new, so it is not kept: a forked
@@ -41,16 +42,16 @@
 
 ALTER TABLE cliproxy_log.requests
     ADD COLUMN IF NOT EXISTS request_tail String MATERIALIZED replaceRegexpAll(
-        if(empty(JSONExtract(client_request, multiIf(source_format = 'openai-response', 'input', startsWith(source_format, 'gemini'), 'contents', 'messages'), 'Array(Tuple(role String, type String))')),
-            JSONExtractRaw(client_request, multiIf(source_format = 'openai-response', 'input', startsWith(source_format, 'gemini'), 'contents', 'messages')),
+        if(empty(JSONExtract(client_request, multiIf(source_format = 'openai-response', 'input', startsWith(source_format, 'gemini'), 'contents', source_format = 'openai-image', 'prompt', 'messages'), 'Array(Tuple(role String, type String))')),
+            JSONExtractRaw(client_request, multiIf(source_format = 'openai-response', 'input', startsWith(source_format, 'gemini'), 'contents', source_format = 'openai-image', 'prompt', 'messages')),
             arrayStringConcat(
                 arrayMap(
-                    i -> JSONExtractRaw(client_request, multiIf(source_format = 'openai-response', 'input', startsWith(source_format, 'gemini'), 'contents', 'messages'), i),
+                    i -> JSONExtractRaw(client_request, multiIf(source_format = 'openai-response', 'input', startsWith(source_format, 'gemini'), 'contents', source_format = 'openai-image', 'prompt', 'messages'), i),
                     range(
                         toUInt64(arrayLastIndex(
                             m -> m.role IN ('assistant', 'model') OR (m.role = '' AND m.type != '' AND NOT endsWith(m.type, '_output')),
-                            JSONExtract(client_request, multiIf(source_format = 'openai-response', 'input', startsWith(source_format, 'gemini'), 'contents', 'messages'), 'Array(Tuple(role String, type String))')) + 1),
-                        length(JSONExtract(client_request, multiIf(source_format = 'openai-response', 'input', startsWith(source_format, 'gemini'), 'contents', 'messages'), 'Array(Tuple(role String, type String))')) + 1)),
+                            JSONExtract(client_request, multiIf(source_format = 'openai-response', 'input', startsWith(source_format, 'gemini'), 'contents', source_format = 'openai-image', 'prompt', 'messages'), 'Array(Tuple(role String, type String))')) + 1),
+                        length(JSONExtract(client_request, multiIf(source_format = 'openai-response', 'input', startsWith(source_format, 'gemini'), 'contents', source_format = 'openai-image', 'prompt', 'messages'), 'Array(Tuple(role String, type String))')) + 1)),
                 '\n')),
-        '"(data|image_url|file_data)"\\s*:\\s*"(data:[^",;]*;base64,)?[A-Za-z0-9+/=]{256,}"', '"\\1":""')
+        '"(data|image_url|file_data|url)"\\s*:\\s*"(data:[^",;]*;base64,)?[A-Za-z0-9+/=]{256,}"', '"\\1":""')
     CODEC(ZSTD(3));
