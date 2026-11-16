@@ -14,7 +14,10 @@
 -- is every message after the last assistant (Gemini: model) message, a Gemini turn
 -- without a role counting as the user's; for OpenAI Responses (input) every item after
 -- the last assistant message or role-less item of the assistant's (reasoning,
--- function_call, and similar; *_output items, the tool results, count as input). A plain-string input is kept whole. The system prompt and
+-- function_call, and similar; *_output items, the tool results, count as input). An
+-- item with an unknown role, or with neither role nor type, counts as input. Bodies
+-- that nest their turns elsewhere, such as gemini-cli's request.contents, give an
+-- empty value; the fleet sends Claude and Codex traffic only. A plain-string input is kept whole. The system prompt and
 -- tool definitions are left out: they repeat in every request and match every search.
 -- Base64 payloads of 256 characters or more under data, image_url, or file_data
 -- (screenshots, files) are emptied; they are most of the bytes and hold no text.
