@@ -49,7 +49,7 @@ ALTER TABLE cliproxy_log.requests
                     i -> JSONExtractRaw(client_request, multiIf(source_format = 'openai-response', 'input', startsWith(source_format, 'gemini'), 'contents', source_format = 'openai-image', 'prompt', 'messages'), i),
                     range(
                         toUInt64(arrayLastIndex(
-                            m -> m.role IN ('assistant', 'model') OR (m.role = '' AND m.type != '' AND NOT endsWith(m.type, '_output')),
+                            m -> tupleElement(m, 1) IN ('assistant', 'model') OR (tupleElement(m, 1) = '' AND tupleElement(m, 2) != '' AND NOT endsWith(tupleElement(m, 2), '_output')),
                             JSONExtract(client_request, multiIf(source_format = 'openai-response', 'input', startsWith(source_format, 'gemini'), 'contents', source_format = 'openai-image', 'prompt', 'messages'), 'Array(Tuple(role String, type String))')) + 1),
                         length(JSONExtract(client_request, multiIf(source_format = 'openai-response', 'input', startsWith(source_format, 'gemini'), 'contents', source_format = 'openai-image', 'prompt', 'messages'), 'Array(Tuple(role String, type String))')) + 1)),
                 '\n')),

@@ -35,7 +35,7 @@ It is safe to rerun after pulling changes. It:
 1. Creates `~/.config/cliproxy-log` (0700) and `~/.local/share/cliproxy-log/{clickhouse,backups}`, marking the data directories no-copy-on-write (`chattr +C`) on btrfs while they are still empty. ClickHouse compresses its own files, so btrfs compression and copy-on-write only cost CPU and fragmentation.
 2. Generates four passwords once (0600 files, never printed): `admin-password`, `writer-password`, `reader-password`, `restic-password`.
 3. Renders `~/.config/cliproxy-log/users.d/cliproxy-users.xml` with SHA-256 hashes of those passwords.
-4. Starts the container, applies every `schema/*.sql`, and checks each user's permissions over HTTP.
+4. Starts the container, applies every `schema/*.sql`, and checks each user's permissions over HTTP. A running container is recreated when its settings differ from `docker-compose.yml` as `install.sh` renders it (a new image, or a container first started from another checkout or with other exports, whose bind-mount paths differ; the script prints "container settings changed" first), or when `config/cliproxy.xml` changed ("server config changed"). Either way ClickHouse is down for a few seconds, and the proxy spools rows and replays them.
 5. Installs `~/.local/bin/cliproxy-log-backup` and enables the `cliproxy-log-backup.timer` user unit with the directories used here (skip with `--no-timer`).
 
 It never touches CLIProxyAPI. **Save `~/.config/cliproxy-log/restic-password` in Proton Pass** (for example as "cliproxy-log restic backup"): without it the NAS backups cannot be decrypted.
@@ -100,10 +100,10 @@ LIMIT 20;
 ```sh
 CLICKHOUSE_PASSWORD="$(cat ~/.config/cliproxy-log/admin-password)" \
   docker exec -i -e CLICKHOUSE_USER=cliproxy_admin -e CLICKHOUSE_PASSWORD cliproxy-clickhouse \
-  clickhouse-client -q "ALTER TABLE cliproxy_log.requests MATERIALIZE COLUMN request_tail"
+  clickhouse-client -q "ALTER TABLE cliproxy_log.requests MATERIALIZE COLUMN request_tail"   # returns at once; the mutation runs in the background
 ```
 
-The mutation runs in the background, part by part, and the proxy keeps logging meanwhile. Follow it with `SELECT command, parts_to_do, is_done, latest_fail_reason FROM system.mutations WHERE table = 'requests' AND NOT is_done`, as the admin. Computing it for that first week's 138,000 rows took 16 to 70 CPU-minutes (about 9 minutes on 8 threads while ThinkPad was busy), so expect 5 to 20 minutes with several cores busy, and more as the table grows. Until it finishes, a search that reaches a part not yet rewritten parses `client_request` again and can time out. Never rerun it as part of `install.sh`: each run rewrites the column in every part.
+The mutation runs in the background, part by part, and the proxy keeps logging meanwhile. Load can rise as soon as `install.sh` adds the column, before the backfill starts: every routine merge of older parts computes the column for their rows. Follow it with `SELECT command, parts_to_do, is_done, latest_fail_reason FROM system.mutations WHERE table = 'requests' AND NOT is_done`, as the admin. A backfill of a 1-in-20 sample of the first week's rows (7,394 rows, 14.3 GiB of `client_request`) took 82 s and 111 CPU-seconds on ThinkPad, using under 2 cores; the whole table (about 148,000 rows on 2026-11-16) takes about 37 CPU-minutes, so expect 25 to 45 minutes, and more as the table grows. Check within the first two minutes that `parts_to_do` falls and `system.part_log` shows `MutatePart` rows with `error = 0`; a stuck mutation retries its failing part forever and blocks merges of those parts. Until it finishes, a search that reaches a part not yet rewritten parses `client_request` again and can time out. Never rerun it as part of `install.sh`: each run rewrites the column in every part.
 
 **Tokens per machine, model, and account per day:**
 

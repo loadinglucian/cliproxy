@@ -143,6 +143,32 @@ ok writer "INSERT INTO cliproxy_log.requests FORMAT JSONEachRow" "$tail_rows" >/
 got="$(ok reader "SELECT groupArray(concat(request_id, ':', toString(position(request_tail, 'new') > 0), toString(position(request_tail, 'old') > 0), toString(position(request_tail, 'AAAA') > 0))) FROM (SELECT request_id, request_tail FROM cliproxy_log.requests WHERE request_id LIKE 'tail-%' ORDER BY request_id)")"
 [ "$got" = "['tail-chat:100','tail-chat-image:100','tail-claude:100','tail-cut:000','tail-gemini:100','tail-gemini-roleless:100','tail-image:100','tail-responses:100']" ] || fail "request_tail per format returned $got"
 pass "request_tail keeps new messages in every request format and drops base64"
+# The deploy path: rows written before request_tail existed, then 002, and both ways a
+# part without the column gets it: a merge, which computes the column for the old
+# rows (a lambda's named tuple access failed there while inserts and selects worked,
+# and the stuck merges stalled the backfill), and the backfill mutation itself.
+schema_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../schema" && pwd)"
+tail_deploy_path() {
+  local first="$1" second="$2" got
+  admin -q "DROP TABLE IF EXISTS cliproxy_log.tail_check SYNC"
+  admin -q "CREATE TABLE cliproxy_log.tail_check AS cliproxy_log.requests"
+  admin -q "ALTER TABLE cliproxy_log.tail_check DROP COLUMN request_tail"
+  printf '%s\n' "$tail_rows" | admin -q "INSERT INTO cliproxy_log.tail_check FORMAT JSONEachRow"
+  sed 's/cliproxy_log\.requests/cliproxy_log.tail_check/' "$schema_dir/002_request_tail.sql" | admin --multiquery
+  printf '%s\n' "$tail_rows" | admin -q "INSERT INTO cliproxy_log.tail_check FORMAT JSONEachRow"
+  admin -q "$first" || fail "request_tail: '$first' failed on rows written before the column"
+  admin -q "$second" || fail "request_tail: '$second' failed"
+  got="$(admin -q "SELECT count(), arraySort(groupUniqArray(concat(request_id, ':', toString(position(request_tail, 'new') > 0), toString(position(request_tail, 'old') > 0), toString(position(request_tail, 'AAAA') > 0)))) FROM cliproxy_log.tail_check")"
+  admin -q "DROP TABLE cliproxy_log.tail_check SYNC"
+  [ "$got" = "$(printf "16\t['tail-chat-image:100','tail-chat:100','tail-claude:100','tail-cut:000','tail-gemini-roleless:100','tail-gemini:100','tail-image:100','tail-responses:100']")" ] ||
+    fail "request_tail after '$first' returned $got"
+}
+optimize="OPTIMIZE TABLE cliproxy_log.tail_check FINAL"
+materialize="ALTER TABLE cliproxy_log.tail_check MATERIALIZE COLUMN request_tail SETTINGS mutations_sync = 1"
+tail_deploy_path "$optimize" "$materialize"
+pass "request_tail survives a merge of rows written before it existed, then the backfill"
+tail_deploy_path "$materialize" "$optimize"
+pass "request_tail backfills rows written before it existed, then merges"
 denied reader "INSERT INTO cliproxy_log.requests (request_id) VALUES ('reader')"
 denied reader "DROP TABLE cliproxy_log.requests"
 denied reader "CREATE TABLE cliproxy_log.x (a UInt8) ENGINE = Memory"

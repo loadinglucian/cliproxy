@@ -122,6 +122,14 @@ users_file="$config_dir/users.d/cliproxy-users.xml"
 
 # --- 5. Server --------------------------------------------------------------------
 step "starting ClickHouse"
+# Compose recreates a running container whose settings differ from this file as
+# rendered here: an image change, or a container first started from another checkout
+# or with other exports (bind-mount paths are part of the settings). Say so before it
+# happens: ClickHouse is down for a few seconds and the plugin spools meanwhile.
+plan="$(docker compose -f "$here/docker-compose.yml" up -d --dry-run 2>&1 || true)"
+case "$plan" in
+  *" Recreate"*) step "container settings changed; recreating ClickHouse (the proxy spools rows meanwhile)" ;;
+esac
 docker compose -f "$here/docker-compose.yml" up -d --wait --quiet-pull --remove-orphans
 # A single-file bind mount keeps the file it saw when the container started, and git
 # replaces files on pull, so recreate the container when the server config changed.
