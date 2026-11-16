@@ -8,6 +8,7 @@ A local ClickHouse database that stores every model request CLIProxyAPI handles,
 | `config/cliproxy.xml` | Server overrides: console logging, backups disk, system-log retention |
 | `config/users.xml.template` | The three users; `install.sh` fills in password hashes |
 | `schema/001_requests.sql` | Database and table DDL, safe to rerun |
+| `schema/002_request_tail.sql` | `request_tail`, each request's new messages, for search; safe to rerun |
 | `install.sh` | Installs or updates everything on this computer |
 | `backup.sh`, `systemd/` | Nightly backup to the NAS |
 | `bench/` | Storage and search benchmark on synthetic traffic |
@@ -70,26 +71,39 @@ CLICKHOUSE_PASSWORD="$(cat ~/.config/cliproxy-log/reader-password)" \
   cliproxy-clickhouse clickhouse-client
 ```
 
-**Search my history.** The newest request of a session contains every earlier message of it, user and assistant, so searching `client_request` covers whole conversations. `LIKE`/`ILIKE` patterns with at least 4 letters or digits, and `hasToken`, use the text index and answer in milliseconds:
+**Search my history.** Each request resends the whole conversation, so `client_request` repeats every message hundreds of times: a week of it is about 275 GiB uncompressed, and a substring scan over it runs for minutes. Search `request_tail` and `response` instead. `request_tail` holds the messages a request added after the assistant's last turn (the typed prompt, tool results; see `schema/002_request_tail.sql`), and `response` holds the assistant's turn, so the two hold each message of a conversation once. System prompts and tool definitions are in neither.
 
 ```sql
 -- Sessions that mention a term, newest first
 SELECT session_id, machine, min(started_at) AS first_seen, max(started_at) AS last_seen, count() AS requests
 FROM cliproxy_log.requests
-WHERE client_request ILIKE '%zebrafinch%'
+WHERE (request_tail ILIKE '%zebrafinch%' OR response ILIKE '%zebrafinch%')
+  AND started_at >= now() - INTERVAL 30 DAY
 GROUP BY session_id, machine
 ORDER BY last_seen DESC
 LIMIT 20;
 
--- Where the term first appeared in each session, with 300 characters of context
+-- Where the term was last said in each session, with 300 characters of context
 SELECT started_at, machine, session_id,
-       substring(client_request, greatest(1, positionCaseInsensitive(client_request, 'zebrafinch') - 150), 300) AS context
+       substring(request_tail, greatest(1, positionCaseInsensitive(request_tail, 'zebrafinch') - 150), 300) AS context
 FROM cliproxy_log.requests
-WHERE client_request ILIKE '%zebrafinch%'
+WHERE request_tail ILIKE '%zebrafinch%'
 ORDER BY started_at DESC
 LIMIT 1 BY session_id
 LIMIT 20;
 ```
+
+### Backfill request_tail
+
+`install.sh` adds `request_tail` (`schema/002_request_tail.sql`) as a `MATERIALIZED` column: rows inserted from then on get it on insert, but rows already in the table compute it from `client_request` on every read, which is as slow as the scan it replaces. Write it into the existing rows once, as the admin:
+
+```sh
+CLICKHOUSE_PASSWORD="$(cat ~/.config/cliproxy-log/admin-password)" \
+  docker exec -i -e CLICKHOUSE_USER=cliproxy_admin -e CLICKHOUSE_PASSWORD cliproxy-clickhouse \
+  clickhouse-client -q "ALTER TABLE cliproxy_log.requests MATERIALIZE COLUMN request_tail"
+```
+
+The mutation runs in the background, part by part, and the proxy keeps logging meanwhile. Follow it with `SELECT command, parts_to_do, is_done, latest_fail_reason FROM system.mutations WHERE table = 'requests' AND NOT is_done`, as the admin. Computing it for that first week's 138,000 rows took 16 to 70 CPU-minutes (about 9 minutes on 8 threads while ThinkPad was busy), so expect 5 to 20 minutes with several cores busy, and more as the table grows. Until it finishes, a search that reaches a part not yet rewritten parses `client_request` again and can time out. Never rerun it as part of `install.sh`: each run rewrites the column in every part.
 
 **Tokens per machine, model, and account per day:**
 
@@ -111,6 +125,7 @@ ORDER BY day DESC, input DESC;
 - **Sort by session, not time.** `ORDER BY (machine, session_id, started_at)`. Consecutive requests of a session are ~95% identical, so placing them next to each other lets ZSTD store each one as a reference to the previous. Concurrent sessions interleave in time order and lose this.
 - **Large compression blocks on the body columns** (16-32 MiB instead of 64 KiB-1 MiB), so a block holds dozens of turns rather than one or two.
 - **ZSTD long-range window (16 MiB) on request bodies**, so a multi-megabyte long-context request still finds the previous turn.
+- **`request_tail` for search** (`schema/002_request_tail.sql`): each request's new messages, so a search reads each message once instead of once per later turn. On 2026-11-16, after one week (138,000 rows), it held 817 MiB uncompressed and 185 MiB on disk, against 275 GiB and 86 GiB for `client_request`; FleetOK's search over all of it (`request_tail` and `response`) took about 0.6 s, where the same search over `client_request` ran past 60 s. Computing it costs 7 to 30 ms of CPU per row on insert, mostly parsing the request JSON.
 - **Text indexes** (`text`, GA in 26.x) on `client_request` and `response`. `upstream_request` is not indexed: it holds the same client-format payload after credential selection and model rewriting (translation to the upstream protocol happens later, where plugins cannot see it), so it repeats the text of `client_request`.
 - Monthly partitions, a `minmax` index on `started_at` for time ranges, a bloom filter on `request_id`, and no TTL: data is kept forever for now.
 

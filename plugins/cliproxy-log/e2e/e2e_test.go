@@ -23,6 +23,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -370,11 +371,19 @@ plugins:
 
 func applySchema(t *testing.T, chURL, root string) {
 	t.Helper()
-	path := filepath.Join(root, "deploy", "clickhouse", "schema", "001_requests.sql")
-	t.Logf("applying schema %s", path)
-	for _, stmt := range splitSQL(string(readFile(t, path))) {
-		if _, errQuery := chQuery(chURL, stmt); errQuery != nil {
-			t.Fatalf("schema statement failed: %v\n%s", errQuery, stmt)
+	// Every file, in order, as install.sh applies them, so inserts run against the
+	// table as deployed (MATERIALIZED columns included).
+	paths, errGlob := filepath.Glob(filepath.Join(root, "deploy", "clickhouse", "schema", "*.sql"))
+	if errGlob != nil || len(paths) == 0 {
+		t.Fatalf("no schema files: %v", errGlob)
+	}
+	sort.Strings(paths)
+	for _, path := range paths {
+		t.Logf("applying schema %s", path)
+		for _, stmt := range splitSQL(string(readFile(t, path))) {
+			if _, errQuery := chQuery(chURL, stmt); errQuery != nil {
+				t.Fatalf("schema statement failed: %v\n%s", errQuery, stmt)
+			}
 		}
 	}
 }

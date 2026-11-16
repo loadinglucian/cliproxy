@@ -91,6 +91,7 @@ truncated	Bool
 capture_errors	Array(String)
 plugin_version	LowCardinality(String)
 proxy_version	LowCardinality(String)
+request_tail	String
 EOF
 )"
 actual="$(ok reader "DESCRIBE TABLE cliproxy_log.requests FORMAT TSVRaw" | cut -f1,2)"
@@ -119,6 +120,11 @@ pass "defaults applied for omitted fields"
 got="$(ok reader "SELECT groupArray(request_id) FROM (SELECT request_id FROM cliproxy_log.requests WHERE client_request ILIKE '%ZebraFinch%' ORDER BY request_id)")"
 [ "$got" = "['smoke-1','smoke-2']" ] || fail "substring search returned $got"
 pass "substring search finds the matching requests"
+# request_tail holds only what a request added after the assistant's last turn, so
+# smoke-2, which resends the question with an answer after it, does not match.
+got="$(ok reader "SELECT groupArray(request_id) FROM (SELECT request_id FROM cliproxy_log.requests WHERE request_tail ILIKE '%ZebraFinch%' ORDER BY request_id)")"
+[ "$got" = "['smoke-1']" ] || fail "request_tail search returned $got"
+pass "request_tail holds only each request's new messages"
 denied reader "INSERT INTO cliproxy_log.requests (request_id) VALUES ('reader')"
 denied reader "DROP TABLE cliproxy_log.requests"
 denied reader "CREATE TABLE cliproxy_log.x (a UInt8) ENGINE = Memory"
