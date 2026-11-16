@@ -10,10 +10,10 @@
 -- conversation once: about 1.7 GiB a week instead of 275 GiB.
 --
 -- What it holds: the raw JSON of the messages after the last assistant turn,
--- one per line. For Claude (messages) that is every message after the last
--- assistant message; for OpenAI Responses (input) every item after the last one that
--- is not a user, developer, system, or tool message or a *_output item (function and
--- custom tool call outputs). A plain-string input is kept whole. The system prompt and
+-- one per line. For Claude and Chat Completions (messages) and Gemini (contents) that
+-- is every message after the last assistant (Gemini: model) message; for OpenAI
+-- Responses (input) every item after the last one that is not a user, developer,
+-- system, or tool message or a *_output item (function and custom tool call outputs). A plain-string input is kept whole. The system prompt and
 -- tool definitions are left out: they repeat in every request and match every search.
 -- Base64 payloads of 256 characters or more under data, image_url, or file_data
 -- (screenshots, files) are emptied; they are most of the bytes and hold no text.
@@ -33,16 +33,16 @@
 
 ALTER TABLE cliproxy_log.requests
     ADD COLUMN IF NOT EXISTS request_tail String MATERIALIZED replaceRegexpAll(
-        if(empty(JSONExtract(client_request, if(source_format = 'openai-response', 'input', 'messages'), 'Array(Tuple(role String, type String))')),
-            JSONExtractRaw(client_request, if(source_format = 'openai-response', 'input', 'messages')),
+        if(empty(JSONExtract(client_request, multiIf(source_format = 'openai-response', 'input', startsWith(source_format, 'gemini'), 'contents', 'messages'), 'Array(Tuple(role String, type String))')),
+            JSONExtractRaw(client_request, multiIf(source_format = 'openai-response', 'input', startsWith(source_format, 'gemini'), 'contents', 'messages')),
             arrayStringConcat(
                 arrayMap(
-                    i -> JSONExtractRaw(client_request, if(source_format = 'openai-response', 'input', 'messages'), i),
+                    i -> JSONExtractRaw(client_request, multiIf(source_format = 'openai-response', 'input', startsWith(source_format, 'gemini'), 'contents', 'messages'), i),
                     range(
                         toUInt64(arrayLastIndex(
-                            m -> NOT (m.role IN ('user', 'developer', 'system', 'tool') OR endsWith(m.type, '_output')),
-                            JSONExtract(client_request, if(source_format = 'openai-response', 'input', 'messages'), 'Array(Tuple(role String, type String))')) + 1),
-                        length(JSONExtract(client_request, if(source_format = 'openai-response', 'input', 'messages'), 'Array(Tuple(role String, type String))')) + 1)),
+                            m -> NOT (m.role IN ('user', 'developer', 'system', 'tool', 'function') OR endsWith(m.type, '_output')),
+                            JSONExtract(client_request, multiIf(source_format = 'openai-response', 'input', startsWith(source_format, 'gemini'), 'contents', 'messages'), 'Array(Tuple(role String, type String))')) + 1),
+                        length(JSONExtract(client_request, multiIf(source_format = 'openai-response', 'input', startsWith(source_format, 'gemini'), 'contents', 'messages'), 'Array(Tuple(role String, type String))')) + 1)),
                 '\n')),
-        '"(data|image_url|file_data)":"(data:[^",;]*;base64,)?[A-Za-z0-9+/=]{256,}"', '"\\1":""')
+        '"(data|image_url|file_data)"\\s*:\\s*"(data:[^",;]*;base64,)?[A-Za-z0-9+/=]{256,}"', '"\\1":""')
     CODEC(ZSTD(3));
