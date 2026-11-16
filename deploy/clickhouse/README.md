@@ -71,7 +71,7 @@ CLICKHOUSE_PASSWORD="$(cat ~/.config/cliproxy-log/reader-password)" \
   cliproxy-clickhouse clickhouse-client
 ```
 
-**Search my history.** Each request resends the whole conversation, so `client_request` repeats every message hundreds of times: a week of it is about 275 GiB uncompressed, and a substring scan over it runs for minutes. Search `request_tail` and `response` instead. `request_tail` holds the messages a request added after the assistant's last turn (the typed prompt, tool results; see `schema/002_request_tail.sql`), and `response` holds the assistant's turn, so the two hold each message of a conversation once. System prompts and tool definitions are in neither.
+**Search my history.** Each request resends the whole conversation, so `client_request` repeats every message hundreds of times: a week of it is about 275 GiB uncompressed, and a substring scan over it runs for minutes. Search `request_tail` and `response` instead. `request_tail` holds the messages a request added after the assistant's last turn (the typed prompt, tool results; see `schema/002_request_tail.sql`), and `response` holds the assistant's turn, so the two hold each message of a conversation once. A request's top-level system prompt, instructions, and tool definitions are in neither, nor is history a session starts with (a forked subagent's copy of its parent's conversation).
 
 ```sql
 -- Sessions that mention a term, newest first

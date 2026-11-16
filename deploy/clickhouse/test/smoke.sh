@@ -125,6 +125,21 @@ pass "substring search finds the matching requests"
 got="$(ok reader "SELECT groupArray(request_id) FROM (SELECT request_id FROM cliproxy_log.requests WHERE request_tail ILIKE '%ZebraFinch%' ORDER BY request_id)")"
 [ "$got" = "['smoke-1']" ] || fail "request_tail search returned $got"
 pass "request_tail holds only each request's new messages"
+# One row per request format: what each keeps (new) and drops (old, base64).
+b64="$(printf 'A%.0s' $(seq 300))"
+tail_rows="$(
+  cat <<EOF
+{"request_id":"tail-claude","source_format":"claude","client_request":"{\"system\":\"old\",\"messages\":[{\"role\":\"user\",\"content\":\"old\"},{\"role\":\"assistant\",\"content\":\"old\"},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"content\":\"new\"},{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"data\": \"$b64\"}}]}]}"}
+{"request_id":"tail-responses","source_format":"openai-response","client_request":"{\"instructions\":\"old\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":\"old\"},{\"type\":\"function_call\",\"arguments\":\"old\"},{\"type\":\"function_call_output\",\"output\":\"new\"}]}"}
+{"request_id":"tail-chat","source_format":"openai","client_request":"{\"messages\":[{\"role\":\"user\",\"content\":\"old\"},{\"role\":\"assistant\",\"function_call\":{\"name\":\"old\"}},{\"role\":\"function\",\"content\":\"new\"}]}"}
+{"request_id":"tail-gemini","source_format":"gemini","client_request":"{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"old\"}]},{\"role\":\"model\",\"parts\":[{\"text\":\"old\"}]},{\"role\":\"user\",\"parts\":[{\"text\":\"new\"}]}]}"}
+{"request_id":"tail-cut","source_format":"claude","truncated":true,"client_request":"{\"messages\":[{\"role\":\"user\",\"content\":\"new"}
+EOF
+)"
+ok writer "INSERT INTO cliproxy_log.requests FORMAT JSONEachRow" "$tail_rows" >/dev/null
+got="$(ok reader "SELECT groupArray(concat(request_id, ':', toString(position(request_tail, 'new') > 0), toString(position(request_tail, 'old') > 0), toString(position(request_tail, 'AAAA') > 0))) FROM (SELECT request_id, request_tail FROM cliproxy_log.requests WHERE request_id LIKE 'tail-%' ORDER BY request_id)")"
+[ "$got" = "['tail-chat:100','tail-claude:100','tail-cut:000','tail-gemini:100','tail-responses:100']" ] || fail "request_tail per format returned $got"
+pass "request_tail keeps new messages in every request format and drops base64"
 denied reader "INSERT INTO cliproxy_log.requests (request_id) VALUES ('reader')"
 denied reader "DROP TABLE cliproxy_log.requests"
 denied reader "CREATE TABLE cliproxy_log.x (a UInt8) ENGINE = Memory"
