@@ -116,6 +116,8 @@ All contract columns of `cliproxy_log.requests` are written. Notable sources:
 | `upstream_request` | The payload after credential selection and model rewriting, still in the client's protocol. The proxy translates it to the upstream protocol inside the executor, after the last hook a plugin can see. |
 | `response_headers` | Upstream response headers from the response or stream-init hook. |
 
+The table also has `request_tail`, which the plugin never writes: ClickHouse derives it from `client_request` on insert (a `MATERIALIZED` column, `deploy/clickhouse/schema/002_request_tail.sql`), keeping only the messages after the assistant's last turn, for history search.
+
 ## Privacy
 
 - Bodies are stored in full up to `max-body-bytes`: prompts, files, tool output, model replies. Treat the database as sensitive.
