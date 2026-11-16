@@ -11,9 +11,10 @@
 --
 -- What it holds: the raw JSON of the messages after the last assistant turn,
 -- one per line. For Claude and Chat Completions (messages) and Gemini (contents) that
--- is every message after the last assistant (Gemini: model) message; for OpenAI
--- Responses (input) every item after the last one that is not a user, developer,
--- system, or tool message or a *_output item (function and custom tool call outputs). A plain-string input is kept whole. The system prompt and
+-- is every message after the last assistant (Gemini: model) message, a Gemini turn
+-- without a role counting as the user's; for OpenAI Responses (input) every item after
+-- the last assistant message or role-less item of the assistant's (reasoning,
+-- function_call, and similar; *_output items, the tool results, count as input). A plain-string input is kept whole. The system prompt and
 -- tool definitions are left out: they repeat in every request and match every search.
 -- Base64 payloads of 256 characters or more under data, image_url, or file_data
 -- (screenshots, files) are emptied; they are most of the bytes and hold no text.
@@ -44,7 +45,7 @@ ALTER TABLE cliproxy_log.requests
                     i -> JSONExtractRaw(client_request, multiIf(source_format = 'openai-response', 'input', startsWith(source_format, 'gemini'), 'contents', 'messages'), i),
                     range(
                         toUInt64(arrayLastIndex(
-                            m -> NOT (m.role IN ('user', 'developer', 'system', 'tool', 'function') OR endsWith(m.type, '_output')),
+                            m -> m.role IN ('assistant', 'model') OR (m.role = '' AND m.type != '' AND NOT endsWith(m.type, '_output')),
                             JSONExtract(client_request, multiIf(source_format = 'openai-response', 'input', startsWith(source_format, 'gemini'), 'contents', 'messages'), 'Array(Tuple(role String, type String))')) + 1),
                         length(JSONExtract(client_request, multiIf(source_format = 'openai-response', 'input', startsWith(source_format, 'gemini'), 'contents', 'messages'), 'Array(Tuple(role String, type String))')) + 1)),
                 '\n')),
