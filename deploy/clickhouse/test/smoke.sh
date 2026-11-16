@@ -143,6 +143,24 @@ ok writer "INSERT INTO cliproxy_log.requests FORMAT JSONEachRow" "$tail_rows" >/
 got="$(ok reader "SELECT groupArray(concat(request_id, ':', toString(position(request_tail, 'new') > 0), toString(position(request_tail, 'old') > 0), toString(position(request_tail, 'AAAA') > 0))) FROM (SELECT request_id, request_tail FROM cliproxy_log.requests WHERE request_id LIKE 'tail-%' ORDER BY request_id)")"
 [ "$got" = "['tail-chat:100','tail-chat-image:100','tail-claude:100','tail-cut:000','tail-gemini:100','tail-gemini-roleless:100','tail-image:100','tail-responses:100']" ] || fail "request_tail per format returned $got"
 pass "request_tail keeps new messages in every request format and drops base64"
+# The deploy path: rows written before request_tail existed, then 002, a merge, and the
+# backfill. ClickHouse evaluates the column inside merges and mutations differently
+# from inserts and selects (a lambda's named tuple access fails there), so run both.
+schema_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../schema" && pwd)"
+admin -q "DROP TABLE IF EXISTS cliproxy_log.tail_check SYNC"
+admin -q "CREATE TABLE cliproxy_log.tail_check AS cliproxy_log.requests"
+admin -q "ALTER TABLE cliproxy_log.tail_check DROP COLUMN request_tail"
+printf '%s\n' "$tail_rows" | admin -q "INSERT INTO cliproxy_log.tail_check FORMAT JSONEachRow"
+sed 's/cliproxy_log\.requests/cliproxy_log.tail_check/' "$schema_dir/002_request_tail.sql" | admin --multiquery
+printf '%s\n' "$tail_rows" | admin -q "INSERT INTO cliproxy_log.tail_check FORMAT JSONEachRow"
+admin -q "OPTIMIZE TABLE cliproxy_log.tail_check FINAL" || fail "a merge could not compute request_tail"
+admin -q "ALTER TABLE cliproxy_log.tail_check MATERIALIZE COLUMN request_tail SETTINGS mutations_sync = 1" ||
+  fail "the request_tail backfill failed"
+got="$(admin -q "SELECT count(), arraySort(groupUniqArray(concat(request_id, ':', toString(position(request_tail, 'new') > 0), toString(position(request_tail, 'old') > 0), toString(position(request_tail, 'AAAA') > 0)))) FROM cliproxy_log.tail_check")"
+admin -q "DROP TABLE cliproxy_log.tail_check SYNC"
+[ "$got" = "$(printf "16\t['tail-chat-image:100','tail-chat:100','tail-claude:100','tail-cut:000','tail-gemini-roleless:100','tail-gemini:100','tail-image:100','tail-responses:100']")" ] ||
+  fail "request_tail after merge and backfill returned $got"
+pass "request_tail survives a merge and the backfill of rows written before it existed"
 denied reader "INSERT INTO cliproxy_log.requests (request_id) VALUES ('reader')"
 denied reader "DROP TABLE cliproxy_log.requests"
 denied reader "CREATE TABLE cliproxy_log.x (a UInt8) ENGINE = Memory"
