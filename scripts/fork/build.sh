@@ -187,7 +187,8 @@ run_broken() {
 	for i in "${!b_names[@]}"; do
 		pkg="${b_pkgs[$i]}"
 		name="${b_names[$i]}"
-		if go test -count=1 -run "^${name}\$" "$pkg" >"$out" 2>&1; then
+		# A short timeout, so a hanging entry is logged instead of eating the job's time limit.
+		if go test -count=1 -timeout 2m -run "^${name}\$" "$pkg" >"$out" 2>&1; then
 			warn "known-broken test $name in $pkg passed, so upstream fixed it; remove it from $broken_list"
 		else
 			log "known-broken $pkg $name failed as expected:"

@@ -36,7 +36,7 @@ CI pins mise 2026.10.18, which only reads `mise.lock` format version 3; newer mi
 
 `fork-ci` runs on every PR to `main` and every push to `main`. Its jobs `build-and-test` and `plugins` are required checks in the `main` ruleset, which also requires a pull request for every change. Merge commits and squash merges are allowed; rebase merges are off.
 
-`build-and-test` runs the full upstream `go test ./...` (about 2 minutes on a runner) with the quarantined flaky tests split out, as described below. Any other failing test fails the job on its first run, with no retry.
+`build-and-test` runs the full upstream `go test ./...` (about 2 minutes on a runner) with the quarantined flaky tests and the known-broken upstream tests split out, as described below. Any other failing test fails the job on its first run, with no retry.
 
 ### Flaky test quarantine
 
