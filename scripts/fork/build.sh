@@ -57,13 +57,15 @@ warn() {
 	fi
 }
 
-# load_list <file> <kind> fills the parallel arrays l_pkgs and l_names from a test
-# list. An entry whose test no longer exists upstream is dropped with a warning, so
-# an upstream rename or deletion never fails CI. A malformed line fails.
+# load_list <file> <kind> fills the parallel arrays l_pkgs, l_names, and l_lines (line
+# numbers) from a test list. An entry whose test no longer exists upstream is dropped
+# with a warning, so an upstream rename or deletion never fails CI. A malformed line
+# fails.
 load_list() {
 	local list="$1" kind="$2" line pkg name extra n=0
 	l_pkgs=()
 	l_names=()
+	l_lines=()
 	[[ -f "$list" ]] || return 0
 	while IFS= read -r line || [[ -n "$line" ]]; do
 		n=$((n + 1))
@@ -82,19 +84,32 @@ load_list() {
 		fi
 		l_pkgs+=("$pkg")
 		l_names+=("$name")
+		l_lines+=("$n")
 	done <"$list"
 }
 
 # load_lists fills q_pkgs and q_names from flaky_list, and b_pkgs and b_names from
-# broken_list.
+# broken_list. An entry in both lists fails: the quarantine run would fail the job on
+# a deterministic failure, and the known-broken run would never see it.
 load_lists() {
-	local -a l_pkgs l_names
+	local -a l_pkgs l_names l_lines q_lines
+	local i j
 	load_list "$flaky_list" quarantined
 	q_pkgs=(${l_pkgs[@]+"${l_pkgs[@]}"})
 	q_names=(${l_names[@]+"${l_names[@]}"})
+	q_lines=(${l_lines[@]+"${l_lines[@]}"})
 	load_list "$broken_list" known-broken
 	b_pkgs=(${l_pkgs[@]+"${l_pkgs[@]}"})
 	b_names=(${l_names[@]+"${l_names[@]}"})
+	for i in "${!b_names[@]}"; do
+		for j in "${!q_names[@]}"; do
+			if [[ "${b_pkgs[$i]}" == "${q_pkgs[$j]}" && "${b_names[$i]}" == "${q_names[$j]}" ]]; then
+				printf '%s:%d: %s %s is also listed in %s:%d; keep it in one list\n' \
+					"$broken_list" "${l_lines[$i]}" "${b_pkgs[$i]}" "${b_names[$i]}" "$flaky_list" "${q_lines[$j]}" >&2
+				return 1
+			fi
+		done
+	done
 }
 
 # is_listed succeeds when <package-dir> <TestName> is a loaded entry of either list.
@@ -180,22 +195,37 @@ run_quarantined() {
 }
 
 # run_broken runs each known-broken test once. It never fails: a pass means upstream
-# fixed the test, so it warns that the entry should go; a failure is expected.
+# fixed the test, so it warns that the entry should go; a failure is expected. The
+# step summary lists each test's result, followed by any warnings.
 run_broken() {
-	local i pkg name out
+	local i pkg name out result rows=""
+	local -a fixed=()
 	out="$(mktemp)"
 	for i in "${!b_names[@]}"; do
 		pkg="${b_pkgs[$i]}"
 		name="${b_names[$i]}"
 		# A short timeout, so a hanging entry is logged instead of eating the job's time limit.
 		if go test -count=1 -timeout 2m -run "^${name}\$" "$pkg" >"$out" 2>&1; then
-			warn "known-broken test $name in $pkg passed, so upstream fixed it; remove it from $broken_list"
+			result="passed: upstream fixed it, remove the entry"
+			fixed+=("$i")
 		else
+			result="failed as expected"
 			log "known-broken $pkg $name failed as expected:"
 			cat "$out"
 		fi
+		rows="$rows| \`$name\` | \`$pkg\` | $result |"$'\n'
 	done
 	rm -f "$out"
+	if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+		{
+			printf '### Known-broken tests (%s)\n\n' "$broken_list"
+			printf '| Test | Package | Result |\n| --- | --- | --- |\n%s\n' "$rows"
+		} >>"$GITHUB_STEP_SUMMARY"
+	fi
+	# Warn after the table, so each warning's summary line sits under its heading.
+	for i in ${fixed[@]+"${fixed[@]}"}; do
+		warn "known-broken test ${b_names[$i]} in ${b_pkgs[$i]} passed, so upstream fixed it; remove it from $broken_list"
+	done
 }
 
 # run_tests runs the root module's suite with every listed test skipped, then each
