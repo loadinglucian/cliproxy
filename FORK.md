@@ -61,7 +61,7 @@ To remove an entry, delete its line and comment when the test no longer exists (
 
 ### Known-broken upstream tests
 
-Upstream does not run its tests in CI, so a release can ship a test that fails on every run. Fixing it would mean editing upstream files, so `scripts/fork/build.sh test` skips the tests listed in `scripts/fork/broken-tests.txt` in the main run, then runs each once on its own without failing the job. A failure is logged as expected. A pass prints a warning (and a step summary line) that upstream fixed the test.
+Upstream does not run its tests in CI, so a release can ship a test that fails on every run. Fixing it would mean editing upstream files, so `scripts/fork/build.sh test` skips the tests listed in `scripts/fork/broken-tests.txt` in the main run, then runs each once on its own without failing the job. A failure is logged as expected. A pass prints a warning that upstream fixed the test. In GitHub Actions the step summary shows a table of the known-broken tests and whether each failed as expected or passed.
 
 An entry is allowed only when the test:
 
@@ -69,7 +69,7 @@ An entry is allowed only when the test:
 2. fails the same way on upstream's tag checked out on its own, with no files from this repository;
 3. is not caused by anything in this repository's files.
 
-A test that fails only sometimes belongs in `flaky-tests.txt` instead. Entries use the same format, parsing, missing-test warning, and name-collision run as `flaky-tests.txt`. The comment above each gives the failure, the evidence from step 2, the upstream commit that broke it, and the date first seen. Remove an entry as soon as upstream fixes the test, the build warns that it passes, or the test no longer exists.
+A test that fails only sometimes belongs in `flaky-tests.txt` instead. Entries use the same format, parsing, missing-test warning, and name-collision run as `flaky-tests.txt`. A test listed in both files fails the job with both line numbers; keep it in one. The comment above each gives the failure, the evidence from step 2, the upstream commit that broke it, and the date first seen. Remove an entry as soon as upstream fixes the test, the build warns that it passes, or the test no longer exists.
 
 ## Upstream sync
 
