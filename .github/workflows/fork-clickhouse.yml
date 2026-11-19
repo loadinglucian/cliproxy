@@ -56,11 +56,13 @@ jobs:
         run: deploy/clickhouse/test/smoke.sh --with-backup
 
       # When ClickHouse stops answering partway through the user checks, install.sh
-      # must name the user, the check, and HTTP 000 instead of exiting silently. A
-      # curl wrapper on PATH sends every query from call N on to a dead port, so the
-      # real curl fails to connect. N=1 is the first writer check; N=9, by the check
-      # order in install.sh step 7, is the backup user's first refusal check.
-      - name: Install with ClickHouse unreachable during the user checks
+      # must name the user, the check, the HTTP status, and curl's error instead of
+      # exiting silently or passing the check. A curl wrapper on PATH sends every
+      # query from call N on to CURL_FAIL_TO: a dead port, where curl fails to
+      # connect (HTTP 000), or a server that sends a 200 status line and closes before
+      # the body it promised (curl error 18). N=1 is the first writer check; N=9, by
+      # the check order in install.sh step 7, is the backup user's first refusal check.
+      - name: Install with ClickHouse failing during the user checks
         run: |
           shim="$(mktemp -d)"
           REAL_CURL="$(command -v curl)"
@@ -69,26 +71,59 @@ jobs:
           #!/usr/bin/env bash
           n=$(($(cat "$CURL_CALLS") + 1))
           echo "$n" >"$CURL_CALLS"
-          [ "$n" -lt "$CURL_FAIL_FROM" ] || set -- "${@//127.0.0.1:8123/127.0.0.1:1}"
+          [ "$n" -lt "$CURL_FAIL_FROM" ] || set -- "${@//127.0.0.1:8123/$CURL_FAIL_TO}"
           exec "$REAL_CURL" "$@"
           EOF
           chmod +x "$shim/curl"
+          python3 - <<'EOF' &
+          import socket
+          server = socket.create_server(("127.0.0.1", 18124))
+          while True:
+              conn, _ = server.accept()
+              with conn:
+                  data = b""
+                  while b"\r\n\r\n" not in data:
+                      chunk = conn.recv(65536)
+                      if not chunk:
+                          break
+                      data += chunk
+                  else:
+                      head, _, rest = data.partition(b"\r\n\r\n")
+                      length = 0
+                      for line in head.split(b"\r\n")[1:]:
+                          name, _, value = line.partition(b":")
+                          if name.strip().lower() == b"content-length":
+                              length = int(value)
+                      while len(rest) < length:
+                          chunk = conn.recv(65536)
+                          if not chunk:
+                              break
+                          rest += chunk
+                      conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n1\n")
+          EOF
+          cutoff=$!
+          trap 'kill "$cutoff"' EXIT
+          for _ in $(seq 50); do
+            (: </dev/tcp/127.0.0.1/18124) 2>/dev/null && break
+            sleep 0.1
+          done
           check() {
-            local from="$1" out
-            shift
+            local from="$1" to="$2" out
+            shift 2
             echo 0 >"$CURL_CALLS"
-            if out="$(PATH="$shim:$PATH" CURL_FAIL_FROM="$from" deploy/clickhouse/install.sh --no-timer 2>&1)"; then
+            if out="$(PATH="$shim:$PATH" CURL_FAIL_FROM="$from" CURL_FAIL_TO="$to" deploy/clickhouse/install.sh --no-timer 2>&1)"; then
               echo "$out"
-              echo "install.sh succeeded with ClickHouse unreachable from call $from"
+              echo "install.sh succeeded with queries from call $from sent to $to"
               exit 1
             fi
             echo "$out"
-            for want in "HTTP 000" "ClickHouse stopped answering" "Rerunning install.sh is safe" "$@"; do
-              grep -qF -- "$want" <<<"$out" || { echo "missing '$want' from call $from"; exit 1; }
+            for want in "ClickHouse stopped answering" "Rerunning install.sh is safe" "$@"; do
+              grep -qF -- "$want" <<<"$out" || { echo "missing '$want' with queries from call $from sent to $to"; exit 1; }
             done
           }
-          check 1 "checking cliproxy_writer: could not run"
-          check 9 "checking cliproxy_backup: could not check that" "is refused"
+          check 1 127.0.0.1:1 "HTTP 000" "checking cliproxy_writer: could not run"
+          check 9 127.0.0.1:1 "HTTP 000" "checking cliproxy_backup: could not check that" "is refused"
+          check 1 127.0.0.1:18124 "HTTP 200" "curl: (18)" "checking cliproxy_writer: could not run"
 
       # Where the user has no Docker access (ThinkPad): move the socket to a group
       # nobody is in, then check that the backup still runs, since it needs only HTTP,

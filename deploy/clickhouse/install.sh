@@ -194,15 +194,17 @@ done
 http_url="http://127.0.0.1:$CLIPROXY_LOG_HTTP_PORT/"
 
 # Sends one query over the published port as the given user and sets code to the
-# HTTP status (000 when the server cannot be reached) and body to the response, with
-# any curl error, so a failed check can name its cause instead of exiting silently.
-# Credentials go in headers read from a file descriptor, not argv or the
-# environment, and -q and --noproxy keep ~/.curlrc and proxies out.
+# HTTP status (000 when the server cannot be reached), body to the response with
+# any curl error, and curl_rc to curl's exit status, so a failed check can name its
+# cause instead of exiting silently. A transfer cut off after the status line keeps
+# that status but a nonzero curl_rc. Credentials go in headers read from a file
+# descriptor, not argv or the environment, and -q and --noproxy keep ~/.curlrc and
+# proxies out.
 http_query() {
   local user="$1" query="$2" out
   out="$(curl -q --noproxy '*' -sS --max-time 30 -o - -w '\n%{http_code}' \
     -H @<(printf 'X-ClickHouse-User: %s\nX-ClickHouse-Key: %s\n' "cliproxy_$user" "$(cat "$config_dir/$user-password")") \
-    --data-binary "$query" "$http_url" 2>&1 || true)"
+    --data-binary "$query" "$http_url" 2>&1)" && curl_rc=0 || curl_rc=$?
   code="${out##*$'\n'}"
   body="${out%$'\n'*}"
   body="${body%$'\n'}"
@@ -211,17 +213,19 @@ http_query() {
 # last http_query's status and response.
 check_failed() {
   local hint=""
-  [ "$code" != 000 ] || hint=" ClickHouse stopped answering at $http_url; check 'docker logs $container'."
+  [ "$curl_rc" = 0 ] || hint=" ClickHouse stopped answering at $http_url; check 'docker logs $container'."
   die "checking cliproxy_$1: $2 (HTTP $code): $body.$hint Rerunning install.sh is safe."
 }
+# A check passes only on a complete 200 response.
 expect_ok() {
   http_query "$1" "$2"
-  [ "$code" = 200 ] || check_failed "$1" "could not run '$2'"
+  [ "$code" = 200 ] && [ "$curl_rc" = 0 ] || check_failed "$1" "could not run '$2'"
 }
-# A refusal must come from the server: an unreachable server (000) is a failure.
+# A refusal must come from the server as a complete response: an unreachable
+# server (000) or a cut-off transfer is a failure.
 expect_denied() {
   http_query "$1" "$2"
-  [ "$code" != 000 ] || check_failed "$1" "could not check that '$2' is refused"
+  [ "$curl_rc" = 0 ] || check_failed "$1" "could not check that '$2' is refused"
   [ "$code" != 200 ] || die "$1 was allowed to run '$2'"
 }
 
@@ -237,12 +241,12 @@ expect_ok reader "SELECT count() FROM cliproxy_log.requests"
 expect_denied reader "INSERT INTO cliproxy_log.requests (request_id) VALUES ('install-check')"
 expect_denied reader "SELECT 1 SETTINGS max_execution_time = 100000"
 # A new backup-password only reaches ClickHouse when it reloads users.d, a few
-# seconds after step 4 rewrote it. An unreachable server will not recover by
-# waiting, so the next check reports it at once.
+# seconds after step 4 rewrote it. A server that stopped answering will not recover
+# by waiting, so the next check reports it at once.
 for _ in $(seq 30); do
   http_query backup "SELECT 1"
-  [ "$code" = 200 ] && [ "$body" = 1 ] && break
-  [ "$code" != 000 ] || break
+  [ "$code" = 200 ] && [ "$curl_rc" = 0 ] && [ "$body" = 1 ] && break
+  [ "$curl_rc" = 0 ] || break
   sleep 1
 done
 expect_ok backup "SHOW GRANTS"
