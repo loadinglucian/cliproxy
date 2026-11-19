@@ -7,7 +7,8 @@
 #   server [out]      Build ./cmd/server with CGO (default out: bin/cli-proxy-api).
 #                     Reads VERSION, COMMIT, BUILD_DATE for the upstream ldflags.
 #   test              Run go test ./... for the root module, retrying only the
-#                     quarantined tests in scripts/fork/flaky-tests.txt.
+#                     quarantined tests in scripts/fork/flaky-tests.txt and
+#                     running scripts/fork/broken-tests.txt once, never failing.
 #   plugins [outdir]  Test and build every plugins/*/ directory as a c-shared
 #                     library (default outdir: bin/plugins). No-op without plugins/.
 #                     Sets main.proxyVersion from VERSION (no-op if undefined).
@@ -40,6 +41,10 @@ build_server() {
 flaky_list="scripts/fork/flaky-tests.txt"
 quarantine_attempts=3
 
+# Upstream tests that fail deterministically on upstream's own tree, same format.
+# The "Known-broken upstream tests" section of FORK.md says when to add or remove one.
+broken_list="scripts/fork/broken-tests.txt"
+
 # warn prints a warning, as an annotation and a step summary line in GitHub Actions.
 warn() {
 	if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
@@ -52,14 +57,14 @@ warn() {
 	fi
 }
 
-# load_quarantine fills the parallel arrays q_pkgs and q_names from flaky_list. An
-# entry whose test no longer exists upstream is dropped with a warning, so an
-# upstream rename or deletion never fails CI. A malformed line fails.
-load_quarantine() {
-	q_pkgs=()
-	q_names=()
-	[[ -f "$flaky_list" ]] || return 0
-	local line pkg name extra n=0
+# load_list <file> <kind> fills the parallel arrays l_pkgs and l_names from a test
+# list. An entry whose test no longer exists upstream is dropped with a warning, so
+# an upstream rename or deletion never fails CI. A malformed line fails.
+load_list() {
+	local list="$1" kind="$2" line pkg name extra n=0
+	l_pkgs=()
+	l_names=()
+	[[ -f "$list" ]] || return 0
 	while IFS= read -r line || [[ -n "$line" ]]; do
 		n=$((n + 1))
 		pkg="" name="" extra=""
@@ -67,46 +72,65 @@ load_quarantine() {
 		[[ -n "$pkg" ]] || continue
 		pkg="${pkg%/}"
 		if [[ -z "$name" || -n "$extra" || "$pkg" != ./* || ! "$name" =~ ^Test[A-Za-z0-9_]*$ ]]; then
-			printf '%s:%d: want "./<package-dir> <TestName>", got: %s\n' "$flaky_list" "$n" "$line" >&2
+			printf '%s:%d: want "./<package-dir> <TestName>", got: %s\n' "$list" "$n" "$line" >&2
 			return 1
 		fi
 		# Go only runs top-level "func TestName(" declarations in _test.go files.
 		if ! grep -qs "^func ${name}(" "$pkg"/*_test.go; then
-			warn "quarantined test $name no longer exists in $pkg; remove it from $flaky_list"
+			warn "$kind test $name no longer exists in $pkg; remove it from $list"
 			continue
 		fi
-		q_pkgs+=("$pkg")
-		q_names+=("$name")
-	done <"$flaky_list"
+		l_pkgs+=("$pkg")
+		l_names+=("$name")
+	done <"$list"
 }
 
-# is_quarantined succeeds when <package-dir> <TestName> is a loaded entry.
-is_quarantined() {
+# load_lists fills q_pkgs and q_names from flaky_list, and b_pkgs and b_names from
+# broken_list.
+load_lists() {
+	local -a l_pkgs l_names
+	load_list "$flaky_list" quarantined
+	q_pkgs=(${l_pkgs[@]+"${l_pkgs[@]}"})
+	q_names=(${l_names[@]+"${l_names[@]}"})
+	load_list "$broken_list" known-broken
+	b_pkgs=(${l_pkgs[@]+"${l_pkgs[@]}"})
+	b_names=(${l_names[@]+"${l_names[@]}"})
+}
+
+# is_listed succeeds when <package-dir> <TestName> is a loaded entry of either list.
+is_listed() {
 	local i
 	for i in "${!q_names[@]}"; do
 		[[ "${q_pkgs[$i]}" == "$1" && "${q_names[$i]}" == "$2" ]] && return 0
 	done
+	for i in "${!b_names[@]}"; do
+		[[ "${b_pkgs[$i]}" == "$1" && "${b_names[$i]}" == "$2" ]] && return 0
+	done
 	return 1
 }
 
-# run_name_collisions runs, once and without retry, every test that shares a
-# quarantined name but is not quarantined itself: -skip matches test names in all
-# packages, so the main run skipped it too.
+# listed_names prints every loaded test name from both lists, once each.
+listed_names() {
+	printf '%s\n' ${q_names[@]+"${q_names[@]}"} ${b_names[@]+"${b_names[@]}"} | sort -u
+}
+
+# run_name_collisions runs, once and without retry, every test that shares a listed
+# name but is not listed itself: -skip matches test names in all packages, so the
+# main run skipped it too.
 run_name_collisions() {
-	local i name file dir pkg pkgs="" status=0
-	for i in "${!q_names[@]}"; do
-		name="${q_names[$i]}"
+	local name file dir pkg pkgs="" status=0
+	while IFS= read -r name; do
 		while IFS= read -r file; do
 			dir="$(dirname "$file")"
-			is_quarantined "$dir" "$name" && continue
+			is_listed "$dir" "$name" && continue
 			# Only packages go test ./... covers (no nested modules or testdata).
 			[[ -n "$pkgs" ]] || pkgs="$(go list ./...)"
 			pkg="$(go list "$dir" 2>/dev/null)" || continue
 			grep -qxF "$pkg" <<<"$pkgs" || continue
-			log "running $dir $name once: it shares a quarantined test's name"
+			log "running $dir $name once: it shares a listed test's name"
 			go test -count=1 -run "^${name}\$" "$dir" || status=1
 		done < <(grep -rl --include='*_test.go' "^func ${name}(" . | sort -u || true)
-	done
+	done < <(listed_names)
 	return "$status"
 }
 
@@ -155,23 +179,50 @@ run_quarantined() {
 	fi
 }
 
-# run_tests runs the root module's suite with the quarantined tests skipped, then
-# each quarantined test on its own with retries. Every other test gets one run, so
-# a new flake or a real regression fails the job at once.
+# run_broken runs each known-broken test once. It never fails: a pass means upstream
+# fixed the test, so it warns that the entry should go; a failure is expected.
+run_broken() {
+	local i pkg name out
+	out="$(mktemp)"
+	for i in "${!b_names[@]}"; do
+		pkg="${b_pkgs[$i]}"
+		name="${b_names[$i]}"
+		# A short timeout, so a hanging entry is logged instead of eating the job's time limit.
+		if go test -count=1 -timeout 2m -run "^${name}\$" "$pkg" >"$out" 2>&1; then
+			warn "known-broken test $name in $pkg passed, so upstream fixed it; remove it from $broken_list"
+		else
+			log "known-broken $pkg $name failed as expected:"
+			cat "$out"
+		fi
+	done
+	rm -f "$out"
+}
+
+# run_tests runs the root module's suite with every listed test skipped, then each
+# quarantined test on its own with retries, then each known-broken test once without
+# failing. Every other test gets one run, so a new flake or a real regression fails
+# the job at once.
 run_tests() {
-	local -a q_pkgs q_names args
-	load_quarantine
+	local -a q_pkgs q_names b_pkgs b_names args
+	load_lists
 	args=()
-	if [[ ${#q_names[@]} -gt 0 ]]; then
-		args=(-skip "^($(printf '%s\n' "${q_names[@]}" | sort -u | paste -sd '|' -))\$")
+	if [[ $((${#q_names[@]} + ${#b_names[@]})) -gt 0 ]]; then
+		args=(-skip "^($(listed_names | paste -sd '|' -))\$")
 		log "skipping ${#q_names[@]} quarantined test(s) listed in $flaky_list"
+		log "skipping ${#b_names[@]} known-broken test(s) listed in $broken_list"
 	fi
 	log "running go test ./..."
 	go test ${args[@]+"${args[@]}"} ./...
-	[[ ${#q_names[@]} -gt 0 ]] || return 0
+	[[ ${#args[@]} -gt 0 ]] || return 0
 	run_name_collisions
-	log "running quarantined tests, up to $quarantine_attempts attempts each"
-	run_quarantined
+	if [[ ${#q_names[@]} -gt 0 ]]; then
+		log "running quarantined tests, up to $quarantine_attempts attempts each"
+		run_quarantined
+	fi
+	if [[ ${#b_names[@]} -gt 0 ]]; then
+		log "running known-broken tests once each; failures are expected"
+		run_broken
+	fi
 }
 
 plugin_ext() {
@@ -246,7 +297,7 @@ all)
 	build_plugins
 	;;
 *)
-	sed -n '2,18p' "$0" >&2
+	sed -n '2,19p' "$0" >&2
 	exit 2
 	;;
 esac

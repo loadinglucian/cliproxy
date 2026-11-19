@@ -1,0 +1,15 @@
+# Upstream tests that fail deterministically on upstream's own tree. The main go test
+# run in scripts/fork/build.sh test skips each test listed here; then each runs once
+# and never fails the job. A pass warns that upstream fixed it. See "Known-broken
+# upstream tests" in FORK.md.
+#
+# One entry per line: ./<package-dir> <TestName>. Put a comment above each entry with
+# the failure, the evidence that it fails on pure upstream, the upstream commit that
+# broke it, and the date it was first seen.
+
+# "server_test.go:2230: expected gpt-5.5 priority service tier, got []interface {}{}".
+# Fails every run (20 of 20, also at -cpu 1) on upstream v8.0.79 checked out with no
+# fork files. Upstream a5e8f69e ("feat(codex): add GPT-6.2 models and update CLI
+# version", first in v8.0.77) regenerated internal/registry/models/codex_client_models.json
+# without gpt-5.5's priority service tier; the test still expects one. First seen 2026-11-18.
+./internal/api TestModelsWithClientVersionReturnsCodexCatalog

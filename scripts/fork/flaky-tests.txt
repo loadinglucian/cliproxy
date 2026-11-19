@@ -39,3 +39,38 @@
 # registration and its one retry both discarded as superseded; the test then asserts
 # pfx-9 without waiting on the watcher's auth update queue. First seen 2026-11-09.
 ./sdk/cliproxy TestPutOpenAICompatConcurrentWithAuthFieldsPatch_Issue6559
+
+# Reads each client's initial server list right after dialing, but the hub finishes
+# the WebSocket upgrade before it publishes the peer, so a server dialed just before
+# can still be missing: "client 0 saw 2 servers, want 3". First seen 2026-11-17.
+./internal/wstunnel TestHubExchange_ManyToManyFullDuplexMultiplexing
+
+# Never waits for the clean server to be published after dialing it (the hub
+# finishes the upgrade first), so on a busy machine the packet sent to it can meet
+# target_not_found and the server's read times out. First seen 2026-11-16.
+./internal/wstunnel TestHubReview_ByteBudgetBackpressureAndReclaim
+
+# Sends the upstream 429 as soon as the client reads response.created, while the
+# handler's writer may still hold its write lock; the terminal close then skips the
+# error frame and the client sees "close 1006 unexpected EOF". First seen 2026-11-16.
+./sdk/api/handlers/openai TestResponsesWebsocketSameSessionLaterCreate429DoesNotReplayAfterDownstreamCommit
+
+# Same publish race as above: the header-fallback subtest dials two servers and reads
+# a client's server list without waiting for both to be published, so one can be
+# missing from "unexpected server_list types". First seen 2026-11-19.
+./internal/wstunnel TestHubAuth_MethodAndCredentials
+
+# Same publish race: routes tenant B data to serverB right after dialing it, so the
+# hub can answer target_not_found and the receiver's read times out. First seen
+# 2026-11-19.
+./internal/wstunnel TestHubBudget_ExhaustedTenantDoesNotStarveAnotherTenant
+
+# Same publish race: the server's late server_online event reaches the client where
+# the test expects its invalid_data_frame error: "protocol overflow =
+# {"type":"server_online",...}". First seen 2026-11-19.
+./internal/wstunnel TestHubLimits_BinaryPayloadAndTransportBoundaries
+
+# Expects close code 1002 after a reserved opcode, but when the hub's writer is busy
+# the peer gets only a 100ms grace to send the close frame before the socket closes,
+# and the client then sees "close 1006 unexpected EOF". First seen 2026-11-19.
+./internal/wstunnel TestPeerControl_UnknownWebSocketOpcodeIsFatalProtocolError
