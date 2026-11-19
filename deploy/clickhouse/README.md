@@ -6,7 +6,7 @@ A local ClickHouse database that stores every model request CLIProxyAPI handles,
 | --- | --- |
 | `docker-compose.yml` | The server: `clickhouse/clickhouse-server:26.8.34.13` (26.8 LTS), loopback-only, 16 GiB memory cap |
 | `config/cliproxy.xml` | Server overrides: console logging, backups disk, system-log retention |
-| `config/users.xml.template` | The three users; `install.sh` fills in password hashes |
+| `config/users.xml.template` | The four users; `install.sh` fills in password hashes |
 | `schema/001_requests.sql` | Database and table DDL, safe to rerun |
 | `schema/002_request_tail.sql` | `request_tail`, each request's new messages, for search; safe to rerun |
 | `install.sh` | Installs or updates everything on this computer |
@@ -20,31 +20,42 @@ Prerequisites on ThinkPad (one time, needs sudo):
 
 ```sh
 sudo systemctl enable --now docker
-sudo usermod -aG docker "$USER"     # then open a new SSH session or log in again
 sudo pacman -S --needed restic
 ```
 
-Then, from a checkout of this repository:
+Then, from a checkout of this repository, as yourself (never with `sudo`):
 
 ```sh
 deploy/clickhouse/install.sh
 ```
 
+Docker is root-equivalent, so on ThinkPad your user is not in the `docker` group. When `docker` does not work as you, `install.sh` runs only its Docker commands through `sudo` and asks for your password (on the terminal, never from stdin); everything else, including every file it writes, runs as you. Where your user can reach Docker directly (CI), it uses Docker as is.
+
 It is safe to rerun after pulling changes. It:
 
 1. Creates `~/.config/cliproxy-log` (0700) and `~/.local/share/cliproxy-log/{clickhouse,backups}`, marking the data directories no-copy-on-write (`chattr +C`) on btrfs while they are still empty. ClickHouse compresses its own files, so btrfs compression and copy-on-write only cost CPU and fragmentation.
-2. Generates four passwords once (0600 files, never printed): `admin-password`, `writer-password`, `reader-password`, `restic-password`.
+2. Generates five passwords once (0600 files, never printed): `admin-password`, `writer-password`, `reader-password`, `backup-password`, `restic-password`. Existing files are kept, so a rerun only adds missing ones.
 3. Renders `~/.config/cliproxy-log/users.d/cliproxy-users.xml` with SHA-256 hashes of those passwords.
 4. Starts the container, applies every `schema/*.sql`, and checks each user's permissions over HTTP. A running container is recreated when its settings differ from `docker-compose.yml` as `install.sh` renders it (a new image, or a container first started from another checkout or with other exports, whose bind-mount paths differ; the script prints "container settings changed" first), or when `config/cliproxy.xml` changed ("server config changed"). Either way ClickHouse is down for a few seconds, and the proxy spools rows and replays them.
 5. Installs `~/.local/bin/cliproxy-log-backup` and enables the `cliproxy-log-backup.timer` user unit with the directories used here (skip with `--no-timer`).
 
 It never touches CLIProxyAPI. **Save `~/.config/cliproxy-log/restic-password` in Proton Pass** (for example as "cliproxy-log restic backup"): without it the NAS backups cannot be decrypted.
 
-The container runs as your user, so all files stay yours. To run `docker compose` by hand, export what `install.sh` exports:
+The container runs as your user, so all files stay yours. To run `docker compose` by hand, export what `install.sh` exports and pass it through `sudo`, which otherwise resets the environment (and `HOME`, so the default paths would point into `/root`):
 
 ```sh
-export CLIPROXY_LOG_UID=$(id -u) CLIPROXY_LOG_GID=$(id -g)
-docker compose -f deploy/clickhouse/docker-compose.yml ps
+export CLIPROXY_LOG_UID=$(id -u) CLIPROXY_LOG_GID=$(id -g) \
+  CLIPROXY_LOG_CONFIG_DIR=~/.config/cliproxy-log CLIPROXY_LOG_DATA_DIR=~/.local/share/cliproxy-log
+sudo --preserve-env=CLIPROXY_LOG_UID,CLIPROXY_LOG_GID,CLIPROXY_LOG_CONFIG_DIR,CLIPROXY_LOG_DATA_DIR \
+  docker compose -f deploy/clickhouse/docker-compose.yml ps
+```
+
+### Upgrading from an install without `cliproxy_backup`
+
+Rerun `install.sh` once from the updated checkout. It creates `backup-password`, adds `cliproxy_backup` to the rendered users file (ClickHouse reloads it without a restart), checks the new user's grants, and installs the new backup script and unit. Then check the backup the way the timer runs it:
+
+```sh
+systemd-run --user --wait --pipe --collect ~/.local/bin/cliproxy-log-backup --check
 ```
 
 To upgrade ClickHouse, change the image tag and digest in `docker-compose.yml` (stay on an LTS line, `.3` or `.8`) and rerun `install.sh`.
@@ -55,20 +66,27 @@ To upgrade ClickHouse, change the image tag and digest in `docker-compose.yml` (
 | --- | --- | --- | --- |
 | `cliproxy_writer` | `writer-password` | `INSERT`, `SELECT` on `cliproxy_log.*` | `127.0.0.1:8123` |
 | `cliproxy_reader` | `reader-password` | `SELECT` on `cliproxy_log.*`; queries stop after 300 s or 8 GiB and the limits cannot be raised or turned off | `127.0.0.1:8123` |
-| `cliproxy_admin` | `admin-password` | everything (schema changes, backups) | inside the container only (`docker exec`) |
+| `cliproxy_backup` | `backup-password` | `BACKUP` on `cliproxy_log.*` and `WRITE ON DISK`, which is all `BACKUP DATABASE ... TO Disk('backups', ...)` needs; no `SELECT`, `INSERT`, DDL, `RESTORE`, or user management | `127.0.0.1:8123` |
+| `cliproxy_admin` | `admin-password` | everything except user management (schema changes, restores, system tables) | inside the container only (`docker exec`, which needs root on ThinkPad) |
 
-There is no `default` user and no passwordless access. Password files hold 64 hex characters without a trailing newline. Inserts by the writer are batched server-side (`async_insert`) and return once written.
+There is no `default` user and no passwordless access. ClickHouse 26.8 ignores a disk-name filter on `WRITE ON DISK`, so the backup user's grant covers every disk, but `config/cliproxy.xml` allows backups only to the `backups` disk and the user holds nothing else that writes to one; `SHOW GRANTS` lists it as `GRANT DISK ON *.*`. Password files hold 64 hex characters without a trailing newline. Inserts by the writer are batched server-side (`async_insert`) and return once written.
 
 ## Query
 
 **Play UI**: open <http://127.0.0.1:8123/play> on ThinkPad, enter `cliproxy_reader` and the contents of `reader-password`. From another computer, tunnel first: `ssh -L 8123:127.0.0.1:8123 thinkpad`.
 
-**clickhouse-client**: the password goes through the environment, not the command line:
+**HTTP**: the reader needs no Docker access. The credentials go in headers read from a file descriptor, not the command line:
 
 ```sh
-CLICKHOUSE_PASSWORD="$(cat ~/.config/cliproxy-log/reader-password)" \
-  docker exec -it -e CLICKHOUSE_USER=cliproxy_reader -e CLICKHOUSE_PASSWORD \
-  cliproxy-clickhouse clickhouse-client
+curl -sS -H @<(printf 'X-ClickHouse-User: cliproxy_reader\nX-ClickHouse-Key: %s\n' "$(cat ~/.config/cliproxy-log/reader-password)") \
+  --data-binary "SELECT count() FROM cliproxy_log.requests" http://127.0.0.1:8123/
+```
+
+**As the admin** (`clickhouse-client` inside the container), which on ThinkPad needs root because `docker exec` does. The password goes through the environment, by name through `sudo`, never the command line:
+
+```sh
+CLICKHOUSE_PASSWORD="$(cat ~/.config/cliproxy-log/admin-password)" sudo --preserve-env=CLICKHOUSE_PASSWORD \
+  docker exec -it -e CLICKHOUSE_USER=cliproxy_admin -e CLICKHOUSE_PASSWORD cliproxy-clickhouse clickhouse-client
 ```
 
 **Search my history.** Each request resends the whole conversation, so `client_request` repeats every message hundreds of times: a week of it is about 275 GiB uncompressed, and a substring scan over it runs for minutes. Search `request_tail` and `response` instead. `request_tail` holds the messages a request added after the assistant's last turn (the typed prompt, tool results; see `schema/002_request_tail.sql`), and `response` holds the assistant's turn, so the two hold each message of a conversation once. A request's top-level system prompt, instructions, and tool definitions are in neither, nor is history a session starts with (a forked subagent's copy of its parent's conversation).
@@ -95,10 +113,10 @@ LIMIT 20;
 
 ### Backfill request_tail
 
-`install.sh` adds `request_tail` (`schema/002_request_tail.sql`) as a `MATERIALIZED` column: rows inserted from then on get it on insert, but rows already in the table compute it from `client_request` on every read, which is as slow as the scan it replaces. Write it into the existing rows once, as the admin:
+`install.sh` adds `request_tail` (`schema/002_request_tail.sql`) as a `MATERIALIZED` column: rows inserted from then on get it on insert, but rows already in the table compute it from `client_request` on every read, which is as slow as the scan it replaces. Write it into the existing rows once, as the admin (root on ThinkPad):
 
 ```sh
-CLICKHOUSE_PASSWORD="$(cat ~/.config/cliproxy-log/admin-password)" \
+CLICKHOUSE_PASSWORD="$(cat ~/.config/cliproxy-log/admin-password)" sudo --preserve-env=CLICKHOUSE_PASSWORD \
   docker exec -i -e CLICKHOUSE_USER=cliproxy_admin -e CLICKHOUSE_PASSWORD cliproxy-clickhouse \
   clickhouse-client -q "ALTER TABLE cliproxy_log.requests MATERIALIZE COLUMN request_tail"   # returns at once; the mutation runs in the background
 ```
@@ -161,18 +179,18 @@ SELECT formatReadableSize(sum(data_uncompressed_bytes)) AS raw, formatReadableSi
 FROM system.parts WHERE database = 'cliproxy_log' AND active;
 ```
 
-Run it as `cliproxy_admin` (see Restore for the command).
+Run it as `cliproxy_admin` (see Query for the command).
 
 ## Backup
 
 `cliproxy-log-backup.timer` runs `~/.local/bin/cliproxy-log-backup` nightly at about 03:30, catching up after the laptop was off. Each run:
 
-1. `BACKUP DATABASE cliproxy_log TO Disk('backups', 'cliproxy_log')`: a consistent copy in `~/.local/share/cliproxy-log/backups/cliproxy_log`, taken while the plugin keeps writing.
+1. `BACKUP DATABASE cliproxy_log TO Disk('backups', 'cliproxy_log')`, sent over HTTP to `127.0.0.1:8123` as `cliproxy_backup` with the password from `backup-password` (in a header read from a file descriptor, never on a command line or in the environment): a consistent copy in `~/.local/share/cliproxy-log/backups/cliproxy_log`, taken while the plugin keeps writing. The run needs no Docker access and no root.
 2. `restic backup` of that directory into `sftp:storageserver:/home/cliproxy-log-backups/thinkpad`, which is `~/cliproxy-log-backups/thinkpad` in the NAS login's home. This uses the same SSH/SFTP route as the fleet credential backup but its own repository and `restic-password`, so the two never share keys or retention. Unchanged data parts deduplicate, but background merges rewrite and recompress parts within the current month, so a night can upload several times what was written that day.
 3. `restic forget --prune` keeping 7 daily, 4 weekly, and 6 monthly snapshots, then `restic check` on a 5% sample.
 4. Deletes the local copy (also when a step fails).
 
-The timer's systemd user manager keeps the groups it had when it started, so right after `usermod -aG docker` it lacks the docker group; the script then reruns itself with that group through `sg` or `newgrp -c` (Arch), so no reboot is needed. The staging copy needs free space equal to the database size during the run. Logs: `journalctl --user -u cliproxy-log-backup`. Run one now: `systemctl --user start cliproxy-log-backup` (or `cliproxy-log-backup` in a terminal).
+`cliproxy-log-backup --check` only checks that ClickHouse answers and `cliproxy_backup` logs in with BACKUP, and says which failed (`install.sh` runs it from the timer's systemd user manager; `--check-docker` is an older name for it). The staging copy needs free space equal to the database size during the run. Logs: `journalctl --user -u cliproxy-log-backup`. Run one now: `systemctl --user start cliproxy-log-backup` (or `cliproxy-log-backup` in a terminal).
 
 Settings can be overridden with environment variables documented at the top of `backup.sh`, for example `CLIPROXY_LOG_RESTIC_REPOSITORY` for a different target.
 
@@ -188,7 +206,7 @@ restic -r "$repo" restore latest --target ~/.local/share/cliproxy-log/backups/re
 find ~/.local/share/cliproxy-log/backups/restore -name .backup   # note the directory holding .backup
 ```
 
-Then, as admin (`CLICKHOUSE_PASSWORD="$(cat ~/.config/cliproxy-log/admin-password)" docker exec -it -e CLICKHOUSE_USER=cliproxy_admin -e CLICKHOUSE_PASSWORD cliproxy-clickhouse clickhouse-client`), with `<dir>` being that directory relative to `backups/restore/` (restic recreates the full original path, so it looks like `home/loadinglucian/.local/share/cliproxy-log/backups/cliproxy_log`):
+Then, as admin (root on ThinkPad; the command is under Query), with `<dir>` being that directory relative to `backups/restore/` (restic recreates the full original path, so it looks like `home/loadinglucian/.local/share/cliproxy-log/backups/cliproxy_log`):
 
 ```sql
 -- Side by side, to inspect or copy rows back
@@ -209,7 +227,7 @@ On a new computer, put the restic password from Proton Pass into `~/.config/clip
 systemctl --user disable --now cliproxy-log-backup.timer
 rm -rf ~/.config/systemd/user/cliproxy-log-backup.{service,timer,service.d} ~/.local/bin/cliproxy-log-backup
 systemctl --user daemon-reload
-docker compose -f deploy/clickhouse/docker-compose.yml down
+sudo docker compose -f deploy/clickhouse/docker-compose.yml down
 ```
 
 That keeps the data and passwords. To delete them too (irreversible): `rm -rf ~/.local/share/cliproxy-log ~/.config/cliproxy-log`, and on the NAS `ssh storageserver 'rm -rf ~/cliproxy-log-backups'`. Disable the plugin first so it stops trying to write.

@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Installs or updates the cliproxy-log ClickHouse on this computer. Safe to rerun:
 # existing passwords, data, and backups are kept, and the schema is applied with
-# IF NOT EXISTS. It never touches CLIProxyAPI itself.
+# IF NOT EXISTS. It never touches CLIProxyAPI itself. Run it as yourself, never
+# with sudo: it uses Docker directly when you can, otherwise through sudo for the
+# Docker commands only, so every file it writes stays yours.
 #
 # Usage: deploy/clickhouse/install.sh [--no-timer]
 #   --no-timer  skip installing and enabling the nightly backup systemd timer
@@ -18,7 +20,7 @@ for arg in "$@"; do
   case "$arg" in
     --no-timer) install_timer=0 ;;
     -h | --help)
-      sed -n '2,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+      sed -n '2,15p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *)
@@ -46,12 +48,35 @@ die() {
 
 # --- 1. Preflight -------------------------------------------------------------
 step "checking prerequisites"
+[ "$(id -u)" != 0 ] || die "run this as the user who owns the install, not root; it uses sudo for Docker when it needs to"
 for cmd in docker openssl sha256sum curl; do
   command -v "$cmd" >/dev/null || die "$cmd is not installed"
 done
-if ! docker info >/dev/null 2>&1; then
-  die "cannot reach the Docker daemon as $(id -un). Start it with 'sudo systemctl enable --now docker' and add yourself to the docker group with 'sudo usermod -aG docker $(id -un)', then log in again."
+# Docker is root-equivalent, so the user may have no direct access to it (not in the
+# docker group). Then every docker command below runs through sudo, which asks for
+# the password once (sudo reads it from the terminal, never stdin). sudo resets the
+# environment, so the variables docker-compose.yml reads, and the admin password for
+# admin_client, are passed by name with --preserve-env: never on a command line,
+# which ps and sudo's log would show. HOME stays root's, so the Docker CLI never
+# creates root-owned files in this user's home; every path compose needs is exported
+# as an absolute path (step 2) before compose runs, and the container still runs as
+# this user's uid.
+docker_sudo=()
+if ! command docker info >/dev/null 2>&1; then
+  command -v sudo >/dev/null || die "cannot reach the Docker daemon as $(id -un), and sudo is not installed. Start it with 'systemctl enable --now docker' as root."
+  step "Docker needs root here; running docker commands through sudo"
+  keep=CLIPROXY_LOG_CONFIG_DIR,CLIPROXY_LOG_DATA_DIR,CLIPROXY_LOG_HTTP_PORT,CLIPROXY_LOG_UID,CLIPROXY_LOG_GID,CLICKHOUSE_PASSWORD
+  docker_sudo=(sudo "--preserve-env=$keep" --)
+  "${docker_sudo[@]}" docker info >/dev/null 2>&1 ||
+    die "cannot reach the Docker daemon through sudo. Start it with 'sudo systemctl enable --now docker'."
 fi
+docker() {
+  if [ "${#docker_sudo[@]}" -gt 0 ]; then
+    "${docker_sudo[@]}" docker "$@"
+  else
+    command docker "$@"
+  fi
+}
 docker compose version >/dev/null 2>&1 || die "the docker compose plugin is not installed"
 # With only docker.socket enabled, dockerd (and with it this container) starts at boot
 # only once something runs a docker command, so the plugin would spool until then.
@@ -101,7 +126,7 @@ ensure_secret() {
 }
 
 step "ensuring passwords"
-for name in admin writer reader restic; do
+for name in admin writer reader backup restic; do
   ensure_secret "$name-password"
 done
 
@@ -115,6 +140,7 @@ users_file="$config_dir/users.d/cliproxy-users.xml"
   sed -e "s/@ADMIN_SHA256@/$(sha256_of admin)/" \
     -e "s/@WRITER_SHA256@/$(sha256_of writer)/" \
     -e "s/@READER_SHA256@/$(sha256_of reader)/" \
+    -e "s/@BACKUP_SHA256@/$(sha256_of backup)/" \
     "$here/config/users.xml.template" >"$users_file.tmp"
   # ClickHouse reloads users.d on change; replace atomically so it never reads half a file.
   mv "$users_file.tmp" "$users_file"
@@ -139,7 +165,7 @@ if ! docker exec "$container" cat /etc/clickhouse-server/config.d/cliproxy.xml |
 fi
 
 # Runs clickhouse-client inside the container as the admin. The password travels
-# through the environment, never the command line.
+# through the environment (through sudo by name, see step 1), never the command line.
 admin_client() {
   CLICKHOUSE_PASSWORD="$(cat "$config_dir/admin-password")" \
     docker exec -i -e CLICKHOUSE_USER=cliproxy_admin -e CLICKHOUSE_PASSWORD "$container" \
@@ -191,6 +217,20 @@ expect_denied writer "DROP TABLE cliproxy_log.requests"
 expect_ok reader "SELECT count() FROM cliproxy_log.requests"
 expect_denied reader "INSERT INTO cliproxy_log.requests (request_id) VALUES ('install-check')"
 expect_denied reader "SELECT 1 SETTINGS max_execution_time = 100000"
+# A new backup-password only reaches ClickHouse when it reloads users.d, a few
+# seconds after step 4 rewrote it.
+for _ in $(seq 30); do
+  [ "$(http_query backup "SELECT 1")" = "$(printf '1\n\n200')" ] && break
+  sleep 1
+done
+grants="$(http_query backup "SHOW GRANTS")"
+case "$grants" in
+  *"GRANT BACKUP ON cliproxy_log.*"*) ;;
+  *) die "backup user lacks BACKUP on cliproxy_log: $grants" ;;
+esac
+expect_denied backup "SELECT count() FROM cliproxy_log.requests"
+expect_denied backup "INSERT INTO cliproxy_log.requests (request_id) VALUES ('install-check')"
+expect_denied backup "CREATE TABLE cliproxy_log.install_check (a UInt8) ENGINE = Memory"
 anonymous="$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$CLIPROXY_LOG_HTTP_PORT/?query=SELECT+1" || true)"
 [ "$anonymous" != 200 ] || die "an unauthenticated query succeeded; the default user still exists"
 
@@ -214,10 +254,10 @@ if [ "$install_timer" = 1 ]; then
     "${config_dir//%/%%}" "${data_dir//%/%%}" >"$unit_dir/cliproxy-log-backup.service.d/paths.conf"
   systemctl --user daemon-reload
   systemctl --user enable --now cliproxy-log-backup.timer
-  # Check Docker access from where the timer runs: the systemd user manager, whose
-  # groups can predate a new docker group membership (backup.sh then uses sg or newgrp).
-  if ! systemd-run --user --wait --quiet --collect "$HOME/.local/bin/cliproxy-log-backup" --check-docker >/dev/null 2>&1; then
-    echo "warning: the backup timer cannot reach Docker; check that $(id -un) is in the socket's group (sudo usermod -aG docker $(id -un)) and see 'journalctl --user -n 20'" >&2
+  # Check from where the timer runs, the systemd user manager, that the backup user
+  # can log in over HTTP.
+  if ! systemd-run --user --wait --quiet --collect "$HOME/.local/bin/cliproxy-log-backup" --check >/dev/null 2>&1; then
+    echo "warning: the backup timer cannot reach ClickHouse as cliproxy_backup; see 'journalctl --user -n 20'" >&2
   fi
 fi
 command -v restic >/dev/null || echo "warning: restic is not installed; install it (sudo pacman -S --needed restic) before the first backup" >&2
@@ -228,6 +268,7 @@ Done. ClickHouse listens on http://127.0.0.1:$CLIPROXY_LOG_HTTP_PORT (Play UI: /
 Passwords (never printed) are in $config_dir:
   writer-password  for the cliproxy-log plugin (user cliproxy_writer)
   reader-password  for searching (user cliproxy_reader)
-  admin-password   for schema changes and backups (user cliproxy_admin, docker exec only)
+  backup-password  for the nightly backup (user cliproxy_backup, backups only)
+  admin-password   for schema changes and restores (user cliproxy_admin, docker exec only)
   restic-password  for the NAS backup repository; save it in Proton Pass now
 EOF

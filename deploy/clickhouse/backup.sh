@@ -2,7 +2,9 @@
 # Nightly backup of the cliproxy-log database to the NAS.
 #
 # 1. ClickHouse writes a consistent copy of the database with BACKUP DATABASE to
-#    its backups disk (~/.local/share/cliproxy-log/backups/cliproxy_log).
+#    its backups disk (~/.local/share/cliproxy-log/backups/cliproxy_log). The query
+#    goes over HTTP on the loopback port as cliproxy_backup, which may only run
+#    BACKUP, so this needs no Docker access.
 # 2. restic uploads that directory to its own encrypted repository on the NAS over
 #    SFTP, the same transport the fleet credential backup uses, but a separate
 #    repository and password.
@@ -10,12 +12,14 @@
 #    repository is verified, and the local copy is deleted.
 #
 # install.sh installs this as ~/.local/bin/cliproxy-log-backup, run nightly by
-# cliproxy-log-backup.timer. Run it by hand the same way. With --check-docker it
-# only checks that it can reach Docker (install.sh uses this) and exits.
+# cliproxy-log-backup.timer. Run it by hand the same way. With --check it only
+# checks that the backup user can log in over HTTP and holds BACKUP (install.sh
+# uses this), and exits; --check-docker is an older name for it.
 #
 # Environment overrides (defaults in brackets):
 #   CLIPROXY_LOG_CONFIG_DIR         passwords [~/.config/cliproxy-log]
 #   CLIPROXY_LOG_DATA_DIR           backup staging [~/.local/share/cliproxy-log]
+#   CLIPROXY_LOG_HTTP_PORT          ClickHouse HTTP port on 127.0.0.1 [8123]
 #   CLIPROXY_LOG_BACKUP_HOST        snapshot host name [uname -n, short]
 #   CLIPROXY_LOG_NAS                SSH alias of the NAS [storageserver]
 #   CLIPROXY_LOG_RESTIC_REPOSITORY  full restic repository
@@ -29,34 +33,40 @@ host="${host%%.*}"
 nas="${CLIPROXY_LOG_NAS:-storageserver}"
 # Synology's SFTP root is a virtual tree; /home there is the login's home folder.
 repository="${CLIPROXY_LOG_RESTIC_REPOSITORY:-sftp:$nas:/home/cliproxy-log-backups/$host}"
-container=cliproxy-clickhouse
+url="http://127.0.0.1:${CLIPROXY_LOG_HTTP_PORT:-8123}/"
 backup_name=cliproxy_log
 staging="$data_dir/backups/$backup_name"
 tag=cliproxy-log
 
 log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$*"; }
 
-# The timer runs under the systemd user manager, which keeps the groups it started
-# with. With lingering it is never restarted, so a later `usermod -aG docker` does
-# not reach it short of a reboot. When the Docker socket's group lists this user but
-# this process lacks it, rerun with that group through sg (shadow) or newgrp -c
-# (util-linux, Arch has no sg); both grant a listed member the group without a
-# password. Docker reached any other way is used as is.
-socket=/var/run/docker.sock
-if [ -z "${DOCKER_HOST:-}" ] && [ -z "${CLIPROXY_LOG_SG:-}" ] && [ -S "$socket" ] && ! docker info >/dev/null 2>&1; then
-  group="$(stat -c %G "$socket")"
-  if ! id -nG | tr ' ' '\n' | grep -qx "$group" && id -nG "$(id -un)" | tr ' ' '\n' | grep -qx "$group"; then
-    log "rerunning with group $group to reach Docker"
-    cmd="$(printf '%q ' "$0" "$@")"
-    command -v sg >/dev/null && CLIPROXY_LOG_SG=1 exec sg "$group" -c "$cmd"
-    CLIPROXY_LOG_SG=1 exec newgrp -c "$cmd" "$group"
-  fi
-fi
-if [ "${1:-}" = --check-docker ]; then
-  docker info >/dev/null 2>&1 || { log "cannot reach Docker"; exit 1; }
-  log "Docker is reachable"
-  exit 0
-fi
+# Runs one query over HTTP as cliproxy_backup and prints the response body, then
+# the HTTP status on its own last line (000 when the server cannot be reached). The
+# credentials go in headers read from a file descriptor, never argv or the
+# environment. wait_end_of_query makes the server hold the response until the query
+# ends, so a failure always arrives as an error status. There is no overall
+# deadline: a backup takes as long as the database needs.
+password_file="$config_dir/backup-password"
+backup_query() {
+  curl -sS --connect-timeout 10 -o - -w '\n%{http_code}' \
+    -H @<(printf 'X-ClickHouse-User: cliproxy_backup\nX-ClickHouse-Key: %s\n' "$(cat "$password_file")") \
+    --data-binary "$1" "$url?wait_end_of_query=1" 2>&1 || true
+}
+
+[ -s "$password_file" ] || { log "missing $password_file; rerun install.sh"; exit 1; }
+
+case "${1:-}" in
+  --check | --check-docker)
+    out="$(backup_query "SHOW GRANTS")"
+    code="${out##*$'\n'}"
+    body="${out%$'\n'*}"
+    body="${body%$'\n'}"
+    [ "$code" = 200 ] || { log "cliproxy_backup cannot query ClickHouse at $url (HTTP $code): $body"; exit 1; }
+    [[ "$body" == *"GRANT BACKUP ON cliproxy_log.*"* ]] || { log "cliproxy_backup lacks BACKUP on cliproxy_log; rerun install.sh: $body"; exit 1; }
+    log "ClickHouse at $url accepts cliproxy_backup"
+    exit 0
+    ;;
+esac
 
 # Never inherit restic settings from the caller; everything is passed explicitly.
 unset RESTIC_REPOSITORY RESTIC_PASSWORD RESTIC_PASSWORD_COMMAND
@@ -79,14 +89,13 @@ cleanup() { rm -rf "$staging"; }
 trap cleanup EXIT
 cleanup # a killed earlier run may have left a copy behind
 
-admin_client() {
-  CLICKHOUSE_PASSWORD="$(cat "$config_dir/admin-password")" \
-    docker exec -i -e CLICKHOUSE_USER=cliproxy_admin -e CLICKHOUSE_PASSWORD "$container" \
-    clickhouse-client "$@"
-}
-
 log "creating ClickHouse backup"
-status="$(admin_client -q "BACKUP DATABASE cliproxy_log TO Disk('backups', '$backup_name') FORMAT TSV" | cut -f2)"
+out="$(backup_query "BACKUP DATABASE cliproxy_log TO Disk('backups', '$backup_name') FORMAT TSV")"
+code="${out##*$'\n'}"
+body="${out%$'\n'*}"
+body="${body%$'\n'}"
+[ "$code" = 200 ] || { log "BACKUP DATABASE failed (HTTP $code): $body"; exit 1; }
+status="$(cut -f2 <<<"$body")"
 [ "$status" = BACKUP_CREATED ] || { log "BACKUP DATABASE ended with status '$status'"; exit 1; }
 log "backup size: $(du -sh "$staging" | cut -f1)"
 
