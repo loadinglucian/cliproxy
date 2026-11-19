@@ -41,7 +41,7 @@ It is safe to rerun after pulling changes. It:
 
 It never touches CLIProxyAPI. **Save `~/.config/cliproxy-log/restic-password` in Proton Pass** (for example as "cliproxy-log restic backup"): without it the NAS backups cannot be decrypted.
 
-The container runs as your user, so all files stay yours. To run `docker compose` by hand, export what `install.sh` exports and pass it through `sudo`, which otherwise resets the environment (and `HOME`, so the default paths would point into `/root`):
+The container runs as your user, so all files stay yours. To run `docker compose` by hand, export what `install.sh` exports and pass it through `sudo`, which otherwise resets the environment (and `HOME`, so the default paths would point into `/root`). The values below are the defaults; use the ones you installed with:
 
 ```sh
 export CLIPROXY_LOG_UID=$(id -u) CLIPROXY_LOG_GID=$(id -g) \
@@ -78,10 +78,10 @@ There is no `default` user and no passwordless access. ClickHouse 26.8 ignores a
 
 **Play UI**: open <http://127.0.0.1:8123/play> on ThinkPad, enter `cliproxy_reader` and the contents of `reader-password`. From another computer, tunnel first: `ssh -L 8123:127.0.0.1:8123 thinkpad`.
 
-**HTTP**: the reader needs no Docker access. The credentials go in headers read from a file descriptor, not the command line:
+**HTTP**: the reader needs no Docker access. The credentials go in headers read from a file descriptor, not the command line, and `-q --noproxy '*'` keeps `~/.curlrc` and any HTTP proxy from seeing them:
 
 ```sh
-curl -sS -H @<(printf 'X-ClickHouse-User: cliproxy_reader\nX-ClickHouse-Key: %s\n' "$(cat ~/.config/cliproxy-log/reader-password)") \
+curl -q --noproxy '*' -sS -H @<(printf 'X-ClickHouse-User: cliproxy_reader\nX-ClickHouse-Key: %s\n' "$(cat ~/.config/cliproxy-log/reader-password)") \
   --data-binary "SELECT count() FROM cliproxy_log.requests" http://127.0.0.1:8123/
 ```
 
