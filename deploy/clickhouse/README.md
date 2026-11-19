@@ -37,7 +37,7 @@ It is safe to rerun after pulling changes. It:
 2. Generates five passwords once (0600 files, never printed): `admin-password`, `writer-password`, `reader-password`, `backup-password`, `restic-password`. Existing files are kept, so a rerun only adds missing ones.
 3. Renders `~/.config/cliproxy-log/users.d/cliproxy-users.xml` with SHA-256 hashes of those passwords.
 4. Starts the container, applies every `schema/*.sql`, and checks each user's permissions over HTTP. A running container is recreated when its settings differ from `docker-compose.yml` as `install.sh` renders it (a new image, or a container first started from another checkout or with other exports, whose bind-mount paths differ; the script prints "container settings changed" first), or when `config/cliproxy.xml` changed ("server config changed"). Either way ClickHouse is down for a few seconds, and the proxy spools rows and replays them.
-5. Installs `~/.local/bin/cliproxy-log-backup` and enables the `cliproxy-log-backup.timer` user unit with the directories used here (skip with `--no-timer`).
+5. Installs `~/.local/bin/cliproxy-log-backup` and enables the `cliproxy-log-backup.timer` user unit with the directories and HTTP port used here (skip with `--no-timer`).
 
 It never touches CLIProxyAPI. **Save `~/.config/cliproxy-log/restic-password` in Proton Pass** (for example as "cliproxy-log restic backup"): without it the NAS backups cannot be decrypted.
 

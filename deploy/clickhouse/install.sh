@@ -49,6 +49,10 @@ die() {
 # --- 1. Preflight -------------------------------------------------------------
 step "checking prerequisites"
 [ "$(id -u)" != 0 ] || die "run this as the user who owns the install, not root; it uses sudo for Docker when it needs to"
+# The port goes into URLs and the backup timer's systemd Environment= line.
+case "$CLIPROXY_LOG_HTTP_PORT" in
+  '' | *[!0-9]*) die "CLIPROXY_LOG_HTTP_PORT must be a port number (digits only), got '$CLIPROXY_LOG_HTTP_PORT'" ;;
+esac
 for cmd in docker openssl sha256sum curl; do
   command -v "$cmd" >/dev/null || die "$cmd is not installed"
 done
@@ -244,19 +248,24 @@ if [ "$install_timer" = 1 ]; then
   unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
   mkdir -p "$unit_dir"
   install -m 0644 "$here/systemd/cliproxy-log-backup.service" "$here/systemd/cliproxy-log-backup.timer" "$unit_dir/"
-  # backup.sh reads the same path overrides as this script; store the ones used here
-  # so the timer backs up this install. systemd expands %, so double it.
+  # backup.sh reads the same path and port overrides as this script; store the ones
+  # used here so the timer backs up this install. systemd expands %, so double it.
   case "$config_dir$data_dir" in
     *[\"\\]* | *$'\n'*) die "paths for the backup timer must not contain quotes, backslashes, or newlines" ;;
   esac
   mkdir -p "$unit_dir/cliproxy-log-backup.service.d"
-  printf '[Service]\nEnvironment="CLIPROXY_LOG_CONFIG_DIR=%s" "CLIPROXY_LOG_DATA_DIR=%s"\n' \
-    "${config_dir//%/%%}" "${data_dir//%/%%}" >"$unit_dir/cliproxy-log-backup.service.d/paths.conf"
+  printf '[Service]\nEnvironment="CLIPROXY_LOG_CONFIG_DIR=%s" "CLIPROXY_LOG_DATA_DIR=%s" "CLIPROXY_LOG_HTTP_PORT=%s"\n' \
+    "${config_dir//%/%%}" "${data_dir//%/%%}" "$CLIPROXY_LOG_HTTP_PORT" >"$unit_dir/cliproxy-log-backup.service.d/paths.conf"
   systemctl --user daemon-reload
   systemctl --user enable --now cliproxy-log-backup.timer
   # Check from where the timer runs, the systemd user manager, that the backup user
-  # can log in over HTTP.
-  if ! systemd-run --user --wait --quiet --collect "$HOME/.local/bin/cliproxy-log-backup" --check >/dev/null 2>&1; then
+  # can log in over HTTP. systemd-run does not load the service's drop-in, so pass
+  # the same overrides it stores.
+  if ! systemd-run --user --wait --quiet --collect \
+    --setenv=CLIPROXY_LOG_CONFIG_DIR="$config_dir" \
+    --setenv=CLIPROXY_LOG_DATA_DIR="$data_dir" \
+    --setenv=CLIPROXY_LOG_HTTP_PORT="$CLIPROXY_LOG_HTTP_PORT" \
+    "$HOME/.local/bin/cliproxy-log-backup" --check >/dev/null 2>&1; then
     echo "warning: the backup timer cannot reach ClickHouse as cliproxy_backup; see 'journalctl --user -n 20'" >&2
   fi
 fi
