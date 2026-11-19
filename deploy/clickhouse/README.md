@@ -45,8 +45,9 @@ The container runs as your user, so all files stay yours. To run `docker compose
 
 ```sh
 export CLIPROXY_LOG_UID=$(id -u) CLIPROXY_LOG_GID=$(id -g) \
-  CLIPROXY_LOG_CONFIG_DIR=~/.config/cliproxy-log CLIPROXY_LOG_DATA_DIR=~/.local/share/cliproxy-log
-sudo --preserve-env=CLIPROXY_LOG_UID,CLIPROXY_LOG_GID,CLIPROXY_LOG_CONFIG_DIR,CLIPROXY_LOG_DATA_DIR \
+  CLIPROXY_LOG_CONFIG_DIR=~/.config/cliproxy-log CLIPROXY_LOG_DATA_DIR=~/.local/share/cliproxy-log \
+  CLIPROXY_LOG_HTTP_PORT=8123
+sudo --preserve-env=CLIPROXY_LOG_UID,CLIPROXY_LOG_GID,CLIPROXY_LOG_CONFIG_DIR,CLIPROXY_LOG_DATA_DIR,CLIPROXY_LOG_HTTP_PORT \
   docker compose -f deploy/clickhouse/docker-compose.yml ps
 ```
 
@@ -57,6 +58,8 @@ Rerun `install.sh` once from the updated checkout. It creates `backup-password`,
 ```sh
 systemd-run --user --wait --pipe --collect ~/.local/bin/cliproxy-log-backup --check
 ```
+
+`systemd-run` skips the unit's drop-in, so on an install with a non-default `CLIPROXY_LOG_CONFIG_DIR`, `CLIPROXY_LOG_DATA_DIR`, or `CLIPROXY_LOG_HTTP_PORT`, add the same `--setenv=NAME=value` flags `install.sh` passes.
 
 To upgrade ClickHouse, change the image tag and digest in `docker-compose.yml` (stay on an LTS line, `.3` or `.8`) and rerun `install.sh`.
 
@@ -190,7 +193,7 @@ Run it as `cliproxy_admin` (see Query for the command).
 3. `restic forget --prune` keeping 7 daily, 4 weekly, and 6 monthly snapshots, then `restic check` on a 5% sample.
 4. Deletes the local copy (also when a step fails).
 
-`cliproxy-log-backup --check` only checks that ClickHouse answers and `cliproxy_backup` logs in with BACKUP, and says which failed (`install.sh` runs it from the timer's systemd user manager; `--check-docker` is an older name for it). The staging copy needs free space equal to the database size during the run. Logs: `journalctl --user -u cliproxy-log-backup`. Run one now: `systemctl --user start cliproxy-log-backup` (or `cliproxy-log-backup` in a terminal).
+`cliproxy-log-backup --check` only checks that ClickHouse answers and `cliproxy_backup` logs in with BACKUP and WRITE ON DISK, and says which failed (`install.sh` runs it from the timer's systemd user manager; `--check-docker` is an older name for it). The staging copy needs free space equal to the database size during the run. Logs: `journalctl --user -u cliproxy-log-backup`. Run one now: `systemctl --user start cliproxy-log-backup` (or `cliproxy-log-backup` in a terminal).
 
 Settings can be overridden with environment variables documented at the top of `backup.sh`, for example `CLIPROXY_LOG_RESTIC_REPOSITORY` for a different target.
 

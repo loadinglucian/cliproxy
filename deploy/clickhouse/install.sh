@@ -20,7 +20,7 @@ for arg in "$@"; do
   case "$arg" in
     --no-timer) install_timer=0 ;;
     -h | --help)
-      sed -n '2,15p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+      sed -n '2,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *)
@@ -71,8 +71,8 @@ if ! command docker info >/dev/null 2>&1; then
   step "Docker needs root here; running docker commands through sudo"
   keep=CLIPROXY_LOG_CONFIG_DIR,CLIPROXY_LOG_DATA_DIR,CLIPROXY_LOG_HTTP_PORT,CLIPROXY_LOG_UID,CLIPROXY_LOG_GID,CLICKHOUSE_PASSWORD
   docker_sudo=(sudo "--preserve-env=$keep" --)
-  "${docker_sudo[@]}" docker info >/dev/null 2>&1 ||
-    die "cannot reach the Docker daemon through sudo. Start it with 'sudo systemctl enable --now docker'."
+  "${docker_sudo[@]}" docker info >/dev/null ||
+    die "docker info through sudo failed (see the error above): check the sudo password and that sudo may preserve the environment (SETENV), and that Docker runs ('sudo systemctl enable --now docker')."
 fi
 docker() {
   if [ "${#docker_sudo[@]}" -gt 0 ]; then
@@ -192,10 +192,11 @@ done
 
 # --- 7. Verify users over HTTP ------------------------------------------------------
 # Sends one query over the published port as the given user and prints the response
-# body; credentials go in headers read from a file descriptor, not argv.
+# body; credentials go in headers read from a file descriptor, not argv, and -q and
+# --noproxy keep ~/.curlrc and proxies out.
 http_query() {
   local user="$1" query="$2"
-  curl -sS --max-time 30 -o - -w '\n%{http_code}' \
+  curl -q --noproxy '*' -sS --max-time 30 -o - -w '\n%{http_code}' \
     -H @<(printf 'X-ClickHouse-User: %s\nX-ClickHouse-Key: %s\n' "cliproxy_$user" "$(cat "$config_dir/$user-password")") \
     --data-binary "$query" "http://127.0.0.1:$CLIPROXY_LOG_HTTP_PORT/"
 }
@@ -232,10 +233,15 @@ case "$grants" in
   *"GRANT BACKUP ON cliproxy_log.*"*) ;;
   *) die "backup user lacks BACKUP on cliproxy_log: $grants" ;;
 esac
+# GRANT DISK ON *.* is how ClickHouse shows GRANT WRITE ON DISK.
+case "$grants" in
+  *"GRANT DISK ON *.*"*) ;;
+  *) die "backup user lacks WRITE ON DISK (GRANT DISK ON *.*): $grants" ;;
+esac
 expect_denied backup "SELECT count() FROM cliproxy_log.requests"
 expect_denied backup "INSERT INTO cliproxy_log.requests (request_id) VALUES ('install-check')"
 expect_denied backup "CREATE TABLE cliproxy_log.install_check (a UInt8) ENGINE = Memory"
-anonymous="$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$CLIPROXY_LOG_HTTP_PORT/?query=SELECT+1" || true)"
+anonymous="$(curl -q --noproxy '*' -s --max-time 5 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$CLIPROXY_LOG_HTTP_PORT/?query=SELECT+1" || true)"
 [ "$anonymous" != 200 ] || die "an unauthenticated query succeeded; the default user still exists"
 
 # --- 8. Nightly backup ----------------------------------------------------------------

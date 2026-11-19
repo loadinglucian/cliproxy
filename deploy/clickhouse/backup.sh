@@ -13,7 +13,8 @@
 #
 # install.sh installs this as ~/.local/bin/cliproxy-log-backup, run nightly by
 # cliproxy-log-backup.timer. Run it by hand the same way. With --check it only
-# checks that the backup user can log in over HTTP and holds BACKUP (install.sh
+# checks that the backup user can log in over HTTP and holds BACKUP and WRITE ON
+# DISK (install.sh
 # uses this), and exits; --check-docker is an older name for it.
 #
 # Environment overrides (defaults in brackets):
@@ -43,12 +44,12 @@ log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$*"; }
 # Runs one query over HTTP as cliproxy_backup and prints the response body, then
 # the HTTP status on its own last line (000 when the server cannot be reached). The
 # credentials go in headers read from a file descriptor, never argv or the
-# environment. wait_end_of_query makes the server hold the response until the query
+# environment, and -q and --noproxy keep ~/.curlrc and proxies out. wait_end_of_query makes the server hold the response until the query
 # ends, so a failure always arrives as an error status. There is no overall
 # deadline: a backup takes as long as the database needs.
 password_file="$config_dir/backup-password"
 backup_query() {
-  curl -sS --connect-timeout 10 -o - -w '\n%{http_code}' \
+  curl -q --noproxy '*' -sS --connect-timeout 10 -o - -w '\n%{http_code}' \
     -H @<(printf 'X-ClickHouse-User: cliproxy_backup\nX-ClickHouse-Key: %s\n' "$(cat "$password_file")") \
     --data-binary "$1" "$url?wait_end_of_query=1" 2>&1 || true
 }
@@ -63,6 +64,8 @@ case "${1:-}" in
     body="${body%$'\n'}"
     [ "$code" = 200 ] || { log "cliproxy_backup cannot query ClickHouse at $url (HTTP $code): $body"; exit 1; }
     [[ "$body" == *"GRANT BACKUP ON cliproxy_log.*"* ]] || { log "cliproxy_backup lacks BACKUP on cliproxy_log; rerun install.sh: $body"; exit 1; }
+    # GRANT DISK ON *.* is how ClickHouse shows GRANT WRITE ON DISK.
+    [[ "$body" == *"GRANT DISK ON *.*"* ]] || { log "cliproxy_backup lacks WRITE ON DISK (GRANT DISK ON *.*); rerun install.sh: $body"; exit 1; }
     log "ClickHouse at $url accepts cliproxy_backup"
     exit 0
     ;;
