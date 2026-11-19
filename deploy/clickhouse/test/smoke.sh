@@ -4,9 +4,9 @@
 # such as CI, never on the real one.
 #
 # Checks: the table matches the plugin contract, the writer can insert rows that
-# omit optional fields, the reader can search but not write, nobody gets in without
-# a password, the port is loopback-only, and (when restic is installed) a backup
-# uploads and restores.
+# omit optional fields, the reader can search but not write, the backup user can
+# only back up, nobody gets in without a password, the port is loopback-only, and
+# (with --with-backup) a backup uploads and restores.
 #
 # Usage: deploy/clickhouse/test/smoke.sh [--with-backup]
 set -euo pipefail
@@ -176,6 +176,24 @@ denied reader "SELECT 1 SETTINGS max_execution_time = 100000"
 denied reader "SELECT 1 SETTINGS max_execution_time = 0"
 denied reader "SELECT 1 SETTINGS max_memory_usage = 0"
 denied reader "SELECT 1 SETTINGS readonly = 0"
+
+# --- Backup user ------------------------------------------------------------------------
+grants="$(ok backup "SHOW GRANTS")"
+# GRANT DISK ON *.* is how ClickHouse shows GRANT WRITE ON DISK.
+[ "$grants" = "$(printf 'GRANT DISK ON *.* TO cliproxy_backup\nGRANT BACKUP ON cliproxy_log.* TO cliproxy_backup')" ] ||
+  fail "backup user has unexpected grants: $grants"
+pass "backup user holds only BACKUP on cliproxy_log and WRITE ON DISK"
+denied backup "SELECT count() FROM cliproxy_log.requests"
+denied backup "INSERT INTO cliproxy_log.requests (request_id) VALUES ('backup')"
+denied backup "CREATE TABLE cliproxy_log.x (a UInt8) ENGINE = Memory"
+denied backup "DROP TABLE cliproxy_log.requests"
+denied backup "ALTER TABLE cliproxy_log.requests DELETE WHERE 1"
+denied backup "CREATE USER smoke_intruder"
+denied backup "GRANT SELECT ON cliproxy_log.* TO cliproxy_backup"
+denied backup "BACKUP TABLE system.users TO Disk('backups', 'smoke-denied')"
+denied backup "INSERT INTO FUNCTION file('smoke-denied.csv') SELECT 1"
+denied backup "INSERT INTO FUNCTION url('http://127.0.0.1:9/', CSV, 'a UInt8') SELECT 1"
+denied backup "RESTORE DATABASE cliproxy_log AS smoke_restored FROM Disk('backups', 'smoke-denied')"
 
 # --- Network -------------------------------------------------------------------------
 anon="$(curl -s --max-time 5 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/?query=SELECT+1" || true)"

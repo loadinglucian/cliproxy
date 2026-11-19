@@ -55,22 +55,26 @@ jobs:
       - name: Smoke test, backup, and restore
         run: deploy/clickhouse/test/smoke.sh --with-backup
 
-      # The backup timer's systemd user manager can predate the user's docker group
-      # membership. Move the socket to a group this job's processes lack, list the
-      # runner in it, and check the backup regains the group (through sg here) only then.
-      - name: Backup from a session without the socket group
+      # Where the user has no Docker access (ThinkPad): move the socket to a group
+      # nobody is in, then check that the backup still runs, since it needs only HTTP,
+      # and that install.sh still works through sudo without recreating the container
+      # or leaving root-owned files in the user's home.
+      - name: Backup and reinstall without Docker access
         run: |
-          backup="$HOME/.local/bin/cliproxy-log-backup"
-          out="$("$backup" --check-docker)"
-          if grep -q 'rerunning with group' <<<"$out"; then echo "switched groups although Docker was reachable"; exit 1; fi
           sudo groupadd cliproxy-sock
-          sudo gpasswd -a "$USER" cliproxy-sock
           sudo chgrp cliproxy-sock /var/run/docker.sock
           if docker info >/dev/null 2>&1; then echo "Docker still reachable without the socket group"; exit 1; fi
+          backup="$HOME/.local/bin/cliproxy-log-backup"
+          "$backup" --check
           out="$(CLIPROXY_LOG_RESTIC_REPOSITORY="$(mktemp -d)/restic" "$backup" 2>&1)" || { echo "$out"; exit 1; }
           echo "$out"
-          grep -q 'rerunning with group cliproxy-sock' <<<"$out"
           grep -q ' done$' <<<"$out"
+          out="$(deploy/clickhouse/install.sh --no-timer 2>&1)" || { echo "$out"; exit 1; }
+          echo "$out"
+          grep -q 'running docker commands through sudo' <<<"$out"
+          if grep -q 'recreating' <<<"$out"; then echo "install.sh through sudo recreated the container"; exit 1; fi
+          root_owned="$(find "$HOME/.config/cliproxy-log" "$HOME/.local/share/cliproxy-log" "$HOME/.local/bin" "$HOME/.docker" ! -user "$USER" 2>/dev/null || true)"
+          if [ -n "$root_owned" ]; then echo "files not owned by $USER: $root_owned"; exit 1; fi
 
       - name: Server log
         if: failure()

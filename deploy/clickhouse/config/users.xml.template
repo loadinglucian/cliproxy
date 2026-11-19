@@ -37,7 +37,8 @@
         <!-- The image's passwordless default user must not exist. -->
         <default remove="remove"/>
 
-        <!-- Schema changes and backups, from inside the container only (docker exec). -->
+        <!-- Schema changes and restores, from inside the container only (docker exec,
+             which needs root on ThinkPad). -->
         <cliproxy_admin>
             <password_sha256_hex>@ADMIN_SHA256@</password_sha256_hex>
             <networks>
@@ -75,5 +76,26 @@
                 <query>GRANT SELECT ON cliproxy_log.*</query>
             </grants>
         </cliproxy_reader>
+
+        <!-- The nightly backup (backup.sh), over HTTP from the host like the plugin.
+             BACKUP DATABASE needs BACKUP on the tables and WRITE on the DISK source.
+             ClickHouse 26.8 ignores a disk-name filter on the latter (WRITE ON
+             DISK('backups') still fails), so it covers every disk, but config/cliproxy.xml
+             allows backups only to the backups disk and the user holds nothing else that
+             writes to a disk. It cannot read rows over SQL, insert, change the schema,
+             restore, or manage users. SHOW GRANTS lists the second grant as
+             GRANT DISK ON *.*. -->
+        <cliproxy_backup>
+            <password_sha256_hex>@BACKUP_SHA256@</password_sha256_hex>
+            <networks>
+                <ip>::/0</ip>
+            </networks>
+            <profile>default</profile>
+            <quota>default</quota>
+            <grants>
+                <query>GRANT BACKUP ON cliproxy_log.*</query>
+                <query>GRANT WRITE ON DISK</query>
+            </grants>
+        </cliproxy_backup>
     </users>
 </clickhouse>
