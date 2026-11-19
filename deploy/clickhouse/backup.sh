@@ -14,8 +14,7 @@
 # install.sh installs this as ~/.local/bin/cliproxy-log-backup, run nightly by
 # cliproxy-log-backup.timer. Run it by hand the same way. With --check it only
 # checks that the backup user can log in over HTTP and holds BACKUP and WRITE ON
-# DISK (install.sh
-# uses this), and exits; --check-docker is an older name for it.
+# DISK (install.sh uses this), and exits; --check-docker is an older name for it.
 #
 # Environment overrides (defaults in brackets):
 #   CLIPROXY_LOG_CONFIG_DIR         passwords [~/.config/cliproxy-log]
@@ -44,9 +43,10 @@ log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$*"; }
 # Runs one query over HTTP as cliproxy_backup and prints the response body, then
 # the HTTP status on its own last line (000 when the server cannot be reached). The
 # credentials go in headers read from a file descriptor, never argv or the
-# environment, and -q and --noproxy keep ~/.curlrc and proxies out. wait_end_of_query makes the server hold the response until the query
-# ends, so a failure always arrives as an error status. There is no overall
-# deadline: a backup takes as long as the database needs.
+# environment, and -q and --noproxy keep ~/.curlrc and proxies out.
+# wait_end_of_query makes the server hold the response until the query ends, so a
+# failure always arrives as an error status. There is no overall deadline: a backup
+# takes as long as the database needs.
 password_file="$config_dir/backup-password"
 backup_query() {
   curl -q --noproxy '*' -sS --connect-timeout 10 -o - -w '\n%{http_code}' \
