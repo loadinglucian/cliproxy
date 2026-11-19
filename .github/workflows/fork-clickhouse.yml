@@ -55,6 +55,41 @@ jobs:
       - name: Smoke test, backup, and restore
         run: deploy/clickhouse/test/smoke.sh --with-backup
 
+      # When ClickHouse stops answering partway through the user checks, install.sh
+      # must name the user, the check, and HTTP 000 instead of exiting silently. A
+      # curl wrapper on PATH sends every query from call N on to a dead port, so the
+      # real curl fails to connect. N=1 is the first writer check; N=9, by the check
+      # order in install.sh step 7, is the backup user's first refusal check.
+      - name: Install with ClickHouse unreachable during the user checks
+        run: |
+          shim="$(mktemp -d)"
+          REAL_CURL="$(command -v curl)"
+          export REAL_CURL CURL_CALLS="$shim/calls"
+          cat >"$shim/curl" <<'EOF'
+          #!/usr/bin/env bash
+          n=$(($(cat "$CURL_CALLS") + 1))
+          echo "$n" >"$CURL_CALLS"
+          [ "$n" -lt "$CURL_FAIL_FROM" ] || set -- "${@//127.0.0.1:8123/127.0.0.1:1}"
+          exec "$REAL_CURL" "$@"
+          EOF
+          chmod +x "$shim/curl"
+          check() {
+            local from="$1" out
+            shift
+            echo 0 >"$CURL_CALLS"
+            if out="$(PATH="$shim:$PATH" CURL_FAIL_FROM="$from" deploy/clickhouse/install.sh --no-timer 2>&1)"; then
+              echo "$out"
+              echo "install.sh succeeded with ClickHouse unreachable from call $from"
+              exit 1
+            fi
+            echo "$out"
+            for want in "HTTP 000" "ClickHouse stopped answering" "Rerunning install.sh is safe" "$@"; do
+              grep -qF -- "$want" <<<"$out" || { echo "missing '$want' from call $from"; exit 1; }
+            done
+          }
+          check 1 "checking cliproxy_writer: could not run"
+          check 9 "checking cliproxy_backup: could not check that" "is refused"
+
       # Where the user has no Docker access (ThinkPad): move the socket to a group
       # nobody is in, then check that the backup still runs, since it needs only HTTP,
       # and that install.sh still works through sudo without recreating the container
