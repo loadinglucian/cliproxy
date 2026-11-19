@@ -10,7 +10,7 @@ Upstream releases land almost daily, and every one is merged into `main`. To kee
 | --- | --- |
 | `FORK.md` | This document |
 | `mise.toml`, `mise.lock` | Go toolchain pin, matching the `go` directive in `go.mod` |
-| `scripts/fork/` | `build.sh` (build, test, plugins), `flaky-tests.txt` (quarantined upstream tests), `sync.sh` (upstream merge), `disable-foreign-workflows.sh` |
+| `scripts/fork/` | `build.sh` (build, test, plugins), `flaky-tests.txt` (quarantined upstream tests), `broken-tests.txt` (known-broken upstream tests), `sync.sh` (upstream merge), `disable-foreign-workflows.sh` |
 | `.github/workflows/fork-*.yml` | Every workflow this repository runs |
 | `plugins/<name>/` | Dynamic-library plugins built with upstream's plugin ABI, for example `plugins/cliproxy-log/` |
 | `deploy/clickhouse/` | ClickHouse deployment for the request log |
@@ -58,6 +58,18 @@ Each entry is one line, `./<package-dir> <TestName>`, under a comment giving why
 To add an entry, first confirm the test is flaky rather than broken: it passes most runs of `mise exec -- go test -count=200 -run '^<TestName>$' ./<package-dir>` (add `-race` for suspected data races), and its failure comes from the test's timing or cleanup, not from a regression. A test that fails every iteration after the first under `-count` leaks process-global state; that is not flakiness, since CI runs each test once. Note the root cause in the comment. Entries name top-level tests; to quarantine a flaky subtest, list its parent.
 
 To remove an entry, delete its line and comment when the test no longer exists (the warning above), or when it passes 50 runs in a row after an upstream change, at the default GOMAXPROCS: `mise exec -- go test -count=50 -run '^<TestName>$' ./<package-dir>`.
+
+### Known-broken upstream tests
+
+Upstream does not run its tests in CI, so a release can ship a test that fails on every run. Fixing it would mean editing upstream files, so `scripts/fork/build.sh test` skips the tests listed in `scripts/fork/broken-tests.txt` in the main run, then runs each once on its own without failing the job. A failure is logged as expected. A pass prints a warning (and a step summary line) that upstream fixed the test.
+
+An entry is allowed only when the test:
+
+1. fails deterministically: every iteration of `mise exec -- go test -count=20 -run '^<TestName>$' ./<package-dir>`, also with `-cpu 1`;
+2. fails the same way on upstream's tag checked out on its own, with no files from this repository;
+3. is not caused by anything in this repository's files.
+
+A test that fails only sometimes belongs in `flaky-tests.txt` instead. Entries use the same format, parsing, missing-test warning, and name-collision run as `flaky-tests.txt`. The comment above each gives the failure, the evidence from step 2, the upstream commit that broke it, and the date first seen. Remove an entry as soon as upstream fixes the test, the build warns that it passes, or the test no longer exists.
 
 ## Upstream sync
 
